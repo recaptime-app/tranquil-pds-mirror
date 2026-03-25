@@ -302,6 +302,8 @@ async fn handle_socket_inner(
                         break;
                     };
 
+                    info!("{msg:?}");
+
                     if let Message::Close(_) = msg {
                         info!("Client closed connection");
                         break;
@@ -311,4 +313,45 @@ async fn handle_socket_inner(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use super::super::sync_routes;
+    use super::*;
+    use axum_test::TestServer;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn test_websockets_closing() {
+        // tracing_subscriber::fmt().init();
+        tranquil_config::ensure_test_defaults();
+        let state = AppState::new(CancellationToken::new()).await.unwrap();
+        let app = sync_routes()
+            .with_state(state)
+            .into_make_service_with_connect_info::<SocketAddr>();
+        let server = TestServer::builder().http_transport().build(app);
+
+        const CONNECTIONS: usize = 100;
+        let mut open_sockets = Vec::with_capacity(CONNECTIONS);
+
+        for _ in 0..CONNECTIONS {
+            let socket = server
+                .get_websocket("/com.atproto.sync.subscribeRepos")
+                .await
+                .into_websocket()
+                .await;
+            open_sockets.push(socket);
+        }
+        assert_eq!(SUBSCRIBER_COUNT.load(Ordering::SeqCst), CONNECTIONS);
+
+        drop(open_sockets);
+        // disgusting awful hack to give tokio time to poll the server futures enough times to actually drop all the
+        // websockets on the other end as well
+        tokio::time::sleep(Duration::from_millis(8)).await;
+        assert_eq!(SUBSCRIBER_COUNT.load(Ordering::SeqCst), 0);
+    }
 }
