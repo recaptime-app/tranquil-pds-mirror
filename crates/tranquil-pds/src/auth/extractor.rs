@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use axum::{
     extract::{FromRequestParts, OptionalFromRequestParts, OriginalUri},
-    http::{StatusCode, header::AUTHORIZATION, request::Parts},
+    http::{header::AUTHORIZATION, request::Parts},
     response::{IntoResponse, Response},
 };
 use tracing::{debug, error, info};
@@ -35,32 +35,7 @@ pub enum AuthError {
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
-        match self {
-            Self::UseDpopNonce(nonce) => (
-                StatusCode::UNAUTHORIZED,
-                [
-                    ("DPoP-Nonce", nonce.as_str()),
-                    ("WWW-Authenticate", "DPoP error=\"use_dpop_nonce\""),
-                ],
-                axum::Json(serde_json::json!({
-                    "error": "use_dpop_nonce",
-                    "message": "DPoP nonce required"
-                })),
-            )
-                .into_response(),
-            Self::OAuthExpiredToken(msg) => ApiError::OAuthExpiredToken(Some(msg)).into_response(),
-            Self::InvalidDpopProof(msg) => (
-                StatusCode::UNAUTHORIZED,
-                [("WWW-Authenticate", "DPoP error=\"invalid_dpop_proof\"")],
-                axum::Json(serde_json::json!({
-                    "error": "invalid_dpop_proof",
-                    "message": msg
-                })),
-            )
-                .into_response(),
-            Self::InsufficientScope(msg) => ApiError::InsufficientScope(Some(msg)).into_response(),
-            other => ApiError::from(other).into_response(),
-        }
+        ApiError::from(self).into_response()
     }
 }
 

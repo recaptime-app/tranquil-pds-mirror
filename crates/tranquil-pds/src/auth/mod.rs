@@ -106,7 +106,7 @@ struct CachedUserStatus {
     is_admin: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenValidationError {
     AccountDeactivated,
     AccountTakedown,
@@ -115,6 +115,8 @@ pub enum TokenValidationError {
     TokenExpired,
     OAuthTokenExpired,
     InvalidToken,
+    UseDpopNonce(String),
+    InvalidDpopProof(String),
 }
 
 impl fmt::Display for TokenValidationError {
@@ -126,6 +128,8 @@ impl fmt::Display for TokenValidationError {
             Self::AuthenticationFailed => write!(f, "AuthenticationFailed"),
             Self::TokenExpired | Self::OAuthTokenExpired => write!(f, "ExpiredToken"),
             Self::InvalidToken => write!(f, "InvalidToken"),
+            Self::UseDpopNonce(_) => write!(f, "use_dpop_nonce"),
+            Self::InvalidDpopProof(_) => write!(f, "invalid_dpop_proof"),
         }
     }
 }
@@ -612,6 +616,12 @@ pub async fn validate_token_with_dpop(
         }
         Err(crate::oauth::OAuthError::ExpiredToken(_)) => {
             Err(TokenValidationError::OAuthTokenExpired)
+        }
+        Err(crate::oauth::OAuthError::UseDpopNonce(nonce)) => {
+            Err(TokenValidationError::UseDpopNonce(nonce))
+        }
+        Err(crate::oauth::OAuthError::InvalidDpopProof(msg)) => {
+            Err(TokenValidationError::InvalidDpopProof(msg))
         }
         Err(_) => Err(TokenValidationError::AuthenticationFailed),
     }

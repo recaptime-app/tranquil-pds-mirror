@@ -21,6 +21,8 @@ pub enum ApiError {
     InvalidToken(Option<String>),
     ExpiredToken(Option<String>),
     OAuthExpiredToken(Option<String>),
+    UseDpopNonce(String),
+    InvalidDpopProof(String),
     TokenRequired,
     AccountDeactivated,
     AccountTakedown,
@@ -137,6 +139,8 @@ impl ApiError {
             | Self::InvalidToken(_)
             | Self::PasskeyCounterAnomaly
             | Self::OAuthExpiredToken(_)
+            | Self::UseDpopNonce(_)
+            | Self::InvalidDpopProof(_)
             | Self::ReauthRequired { .. } => StatusCode::UNAUTHORIZED,
             Self::InvalidCode(_) => StatusCode::BAD_REQUEST,
             Self::ExpiredToken(_) => StatusCode::BAD_REQUEST,
@@ -236,6 +240,8 @@ impl ApiError {
             Self::AuthenticationFailed(_) => Cow::Borrowed("AuthenticationFailed"),
             Self::InvalidToken(_) => Cow::Borrowed("InvalidToken"),
             Self::ExpiredToken(_) | Self::OAuthExpiredToken(_) => Cow::Borrowed("ExpiredToken"),
+            Self::UseDpopNonce(_) => Cow::Borrowed("use_dpop_nonce"),
+            Self::InvalidDpopProof(_) => Cow::Borrowed("invalid_dpop_proof"),
             Self::TokenRequired => Cow::Borrowed("TokenRequired"),
             Self::AccountDeactivated => Cow::Borrowed("AccountDeactivated"),
             Self::AccountTakedown => Cow::Borrowed("AccountTakedown"),
@@ -335,6 +341,8 @@ impl ApiError {
             Self::ExpiredToken(msg) | Self::OAuthExpiredToken(msg) => {
                 msg.clone().unwrap_or_else(|| "Token has expired".into())
             }
+            Self::UseDpopNonce(_) => "DPoP nonce required".into(),
+            Self::InvalidDpopProof(msg) => msg.clone(),
             Self::RepoNotFound(msg) => msg
                 .clone()
                 .unwrap_or_else(|| "Repository not found".into()),
@@ -560,6 +568,36 @@ impl IntoResponse for ApiError {
                     ),
                 );
             }
+            Self::UseDpopNonce(nonce) => {
+                match HeaderValue::from_str(nonce) {
+                    Ok(val) => {
+                        response
+                            .headers_mut()
+                            .insert(crate::util::HEADER_DPOP_NONCE, val);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            ?err,
+                            nonce_len = nonce.len(),
+                            "generated DPoP nonce is not a valid header value"
+                        );
+                    }
+                }
+                response.headers_mut().insert(
+                    http::header::WWW_AUTHENTICATE,
+                    HeaderValue::from_static(
+                        "DPoP error=\"use_dpop_nonce\", error_description=\"Resource server requires nonce in DPoP proof\"",
+                    ),
+                );
+            }
+            Self::InvalidDpopProof(_) => {
+                response.headers_mut().insert(
+                    http::header::WWW_AUTHENTICATE,
+                    HeaderValue::from_static(
+                        "DPoP error=\"invalid_dpop_proof\", error_description=\"Invalid DPoP proof\"",
+                    ),
+                );
+            }
             _ => {}
         }
         response
@@ -596,6 +634,8 @@ impl From<crate::auth::TokenValidationError> for ApiError {
             crate::auth::TokenValidationError::InvalidToken => {
                 Self::AuthenticationFailed(Some("Invalid token format".to_string()))
             }
+            crate::auth::TokenValidationError::UseDpopNonce(nonce) => Self::UseDpopNonce(nonce),
+            crate::auth::TokenValidationError::InvalidDpopProof(msg) => Self::InvalidDpopProof(msg),
         }
     }
 }
@@ -625,9 +665,9 @@ impl From<crate::auth::extractor::AuthError> for ApiError {
             crate::auth::extractor::AuthError::OAuthExpiredToken(msg) => {
                 Self::OAuthExpiredToken(Some(msg))
             }
-            crate::auth::extractor::AuthError::UseDpopNonce(_)
-            | crate::auth::extractor::AuthError::InvalidDpopProof(_) => {
-                Self::AuthenticationFailed(None)
+            crate::auth::extractor::AuthError::UseDpopNonce(nonce) => Self::UseDpopNonce(nonce),
+            crate::auth::extractor::AuthError::InvalidDpopProof(msg) => {
+                Self::InvalidDpopProof(msg)
             }
         }
     }

@@ -374,7 +374,7 @@ impl OAuthRepository for PostgresOAuthRepository {
             WHERE id IN (
                 SELECT id FROM oauth_token
                 WHERE did = $1
-                ORDER BY updated_at ASC
+                ORDER BY created_at DESC
                 OFFSET $2
             )
             "#,
