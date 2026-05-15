@@ -108,6 +108,15 @@ services:
       db:
         condition: service_healthy
 
+  mailpit:
+    profiles: [dev]
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+
   traefik:
     profiles: [dev]
     image: traefik:v3.4
