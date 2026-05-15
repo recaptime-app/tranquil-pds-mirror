@@ -3,6 +3,8 @@ default:
 
 run:
     cargo run -p tranquil-server
+run-dev:
+    docker compose --profile dev up
 run-release:
     cargo run -p tranquil-server --release
 build:
