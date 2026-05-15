@@ -1,5 +1,6 @@
 services:
   app:
+    profiles: [prod]
     build:
       context: .
       dockerfile: Dockerfile
@@ -16,6 +17,7 @@ services:
       - db
 
   frontend:
+    profiles: [prod]
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -37,6 +39,7 @@ services:
       - postgres_data:/var/lib/postgresql
 
   prometheus:
+    profiles: [prod]
     image: prom/prometheus:v3.8.0
     ports:
       - "9090:9090"
@@ -44,8 +47,8 @@ services:
       - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
       - prometheus_data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yaml'
-      - '--storage.tsdb.path=/prometheus'
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--storage.tsdb.path=/prometheus"
     depends_on:
       - app
 
