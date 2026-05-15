@@ -14,7 +14,8 @@ services:
       - blob_data:/var/lib/tranquil-pds/blobs
       - store_data:/var/lib/tranquil-pds/store
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   frontend:
     profiles: [prod]
@@ -44,6 +45,20 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+
+  plc:
+    profiles: [dev]
+    build:
+      context: https://github.com/did-method-plc/did-method-plc.git
+      dockerfile: packages/server/Dockerfile
+    environment:
+      DB_CREDS_JSON: '{"username":"postgres","password":"postgres","host":"db","port":"5432","database":"plc"}'
+      ENABLE_MIGRATIONS: "true"
+      DB_MIGRATE_CREDS_JSON: '{"username":"postgres","password":"postgres","host":"db","port":"5432","database":"plc"}'
+      PORT: "2582"
+    depends_on:
+      db:
+        condition: service_healthy
 
   traefik:
     profiles: [dev]
