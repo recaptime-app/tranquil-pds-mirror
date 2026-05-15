@@ -17,6 +17,35 @@ services:
       db:
         condition: service_healthy
 
+  app-dev:
+    profiles: [dev]
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: >
+      sh -c '
+        cp /certs/pds.test.pem /usr/local/share/ca-certificates/pds.test.crt
+        update-ca-certificates
+        cargo watch -x "run -p tranquil-server --features native-tls-roots -- --config /app/config.dev.toml"
+      '
+    environment:
+      SERVER_HOST: "0.0.0.0"
+      SQLX_OFFLINE: "true"
+      PLC_DIRECTORY_URL: "http://plc:2582"
+    volumes:
+      - ./:/app
+      - cargo_target:/app/target
+      - cargo_registry:/usr/local/cargo/registry
+      - blob_data:/var/lib/tranquil-pds/blobs
+      - certs:/certs:ro
+    depends_on:
+      traefik:
+        condition: service_started
+      db:
+        condition: service_healthy
+      plc:
+        condition: service_started
+
   frontend:
     profiles: [prod]
     build:
@@ -108,4 +137,6 @@ volumes:
   blob_data:
   store_data:
   prometheus_data:
+  cargo_target:
+  cargo_registry:
   certs:

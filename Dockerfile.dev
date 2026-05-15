@@ -1,0 +1,20 @@
+FROM rust:1.92-alpine
+
+RUN apk add --no-cache \
+    ca-certificates \
+    musl-dev \
+    pkgconfig \
+    openssl-dev \
+    openssl-libs-static \
+    mold \
+    clang \
+    protoc
+
+RUN cargo install cargo-watch
+
+ENV RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=mold"
+ENV SQLX_OFFLINE=true
+
+WORKDIR /app
+
+CMD ["cargo", "watch", "-x", "run -p tranquil-server -- --config /app/config.dev.toml"]

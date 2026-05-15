@@ -1,0 +1,30 @@
+[server]
+hostname = "pds.test"
+allow_http_proxy = true
+invite_code_required = false
+disable_rate_limiting = true
+
+[frontend]
+enabled = true
+dir = "/app/frontend/public"
+
+[database]
+url = "postgres://postgres:postgres@db:5432/pds"
+
+[storage]
+path = "/var/lib/tranquil-pds/blobs"
+
+[plc]
+directory_url = "http://plc:2582"
+
+[email]
+from_address = "noreply@pds.test"
+from_name = "Tranquil PDS (Dev)"
+
+[email.smarthost]
+host = "mailpit"
+port = 1025
+tls = "none"
+
+[secrets]
+allow_insecure = true
