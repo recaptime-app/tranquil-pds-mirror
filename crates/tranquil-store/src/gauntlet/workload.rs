@@ -1,6 +1,6 @@
 use super::op::{
-    CollectionName, DidSeed, EventKind, Op, OpStream, PayloadSeed, RecordKey, RetentionSecs, Seed,
-    ValueSeed,
+    CollectionName, DidSeed, EventKind, FileChoice, Op, OpStream, PayloadSeed, RecordKey,
+    RetentionSecs, Seed, ValueSeed,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -23,6 +23,7 @@ pub struct OpWeights {
     pub run_retention: u32,
     pub read_record: u32,
     pub read_block: u32,
+    pub external_delete_data_file: u32,
 }
 
 impl OpWeights {
@@ -36,6 +37,7 @@ impl OpWeights {
             + self.run_retention
             + self.read_record
             + self.read_block
+            + self.external_delete_data_file
     }
 
     pub const fn touches_eventlog(&self) -> bool {
@@ -103,6 +105,7 @@ impl Default for WorkloadModel {
                 run_retention: 0,
                 read_record: 0,
                 read_block: 0,
+                external_delete_data_file: 0,
             },
             size_distribution: SizeDistribution::Fixed(ValueBytes(64)),
             collections: vec![CollectionName("app.bsky.feed.post".to_string())],
@@ -138,6 +141,7 @@ impl WorkloadModel {
                 let t6 = t5 + w.sync_event_log;
                 let t7 = t6 + w.run_retention;
                 let t8 = t7 + w.read_record;
+                let t9 = t8 + w.read_block;
 
                 match bucket {
                     b if b < t1 => Op::AddRecord {
@@ -166,8 +170,11 @@ impl WorkloadModel {
                         collection: coll,
                         rkey,
                     },
-                    _ => Op::ReadBlock {
+                    b if b < t9 => Op::ReadBlock {
                         value_seed: ValueSeed(rng.next_u32()),
+                    },
+                    _ => Op::ExternalDeleteDataFile {
+                        choice: FileChoice(rng.next_u32()),
                     },
                 }
             })

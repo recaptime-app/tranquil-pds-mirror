@@ -1,3 +1,4 @@
+pub mod chaos_walker;
 pub mod farm;
 pub mod flaky;
 pub mod invariants;
@@ -17,13 +18,14 @@ pub use flaky::{
     BackingMegabytes, DownIntervalSecs, FlakyConfig, FlakyError, FlakyMount, UpIntervalSecs,
 };
 pub use invariants::{
-    EventLogSnapshot, Invariant, InvariantSet, InvariantViolation, SnapshotEvent, invariants_for,
+    EventLogSnapshot, HintBackedByData, IndexBackedByDisk, IndexBlocksReadable, Invariant,
+    InvariantCtx, InvariantSet, InvariantViolation, SnapshotEvent, invariants_for,
 };
 pub use leak::{LeakGateBuildError, LeakGateConfig, LeakViolation, evaluate as evaluate_leak_gate};
 pub use metrics::{MetricName, MetricsSample, sample_harness};
 pub use op::{
-    CollectionName, DidSeed, EventKind, Op, OpStream, PayloadSeed, RecordKey, RetentionSecs, Seed,
-    ValueSeed,
+    CollectionName, DidSeed, EventKind, FileChoice, Op, OpStream, PayloadSeed, RecordKey,
+    RetentionSecs, Seed, ValueSeed,
 };
 pub use oracle::{EventExpectation, Oracle};
 pub use overrides::{ConfigOverrides, GroupCommitOverrides, StoreOverrides};

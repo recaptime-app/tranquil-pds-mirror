@@ -606,6 +606,13 @@ impl HashTable {
         });
     }
 
+    pub fn cids_in_file(&self, file_id: DataFileId) -> Vec<CidBytes> {
+        self.iter()
+            .filter(|s| s.file_id == file_id)
+            .map(|s| s.cid)
+            .collect()
+    }
+
     pub fn purge_by_file_id(&mut self, file_id: DataFileId) -> u64 {
         let victims: Vec<(CidBytes, RefCount)> = self
             .iter()
@@ -1522,6 +1529,10 @@ impl BlockIndex {
                 }
                 _ => acc,
             })
+    }
+
+    pub fn cids_in_file(&self, file_id: DataFileId) -> Vec<CidBytes> {
+        self.table.read().cids_in_file(file_id)
     }
 
     pub fn purge_by_file_id(&self, file_id: DataFileId) -> u64 {

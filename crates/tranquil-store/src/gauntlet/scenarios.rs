@@ -31,6 +31,7 @@ pub enum Scenario {
     ContendedReaders,
     ContendedWriters,
     FlakyDevice,
+    ExternalCorruption,
 }
 
 impl Scenario {
@@ -53,6 +54,7 @@ impl Scenario {
             Self::ContendedReaders => "ContendedReaders",
             Self::ContendedWriters => "ContendedWriters",
             Self::FlakyDevice => "FlakyDevice",
+            Self::ExternalCorruption => "ExternalCorruption",
         }
     }
 
@@ -75,6 +77,7 @@ impl Scenario {
             Self::ContendedReaders => "contended-readers",
             Self::ContendedWriters => "contended-writers",
             Self::FlakyDevice => "flaky-device",
+            Self::ExternalCorruption => "external-corruption",
         }
     }
 
@@ -109,6 +112,9 @@ impl Scenario {
             Self::FlakyDevice => {
                 "Real IO on ext4 atop dm-flakey. Requires root with dm-flakey available, skips otherwise."
             }
+            Self::ExternalCorruption => {
+                "Rare external data-file deletion mid-workload. Validates phantom-purge self-heal under chaos."
+            }
         }
     }
 
@@ -138,6 +144,7 @@ impl Scenario {
         Self::ContendedReaders,
         Self::ContendedWriters,
         Self::FlakyDevice,
+        Self::ExternalCorruption,
     ];
 }
 
@@ -211,6 +218,7 @@ pub fn config_for(scenario: Scenario, seed: Seed) -> GauntletConfig {
         Scenario::ContendedReaders => contended_readers(seed),
         Scenario::ContendedWriters => contended_writers(seed),
         Scenario::FlakyDevice => flaky_device(seed),
+        Scenario::ExternalCorruption => external_corruption(seed),
     }
 }
 
@@ -280,6 +288,7 @@ fn smoke_pr(seed: Seed) -> GauntletConfig {
         store: tiny_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -305,6 +314,7 @@ fn mst_churn(seed: Seed) -> GauntletConfig {
         store: tiny_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -330,6 +340,7 @@ fn mst_restart_churn(seed: Seed) -> GauntletConfig {
         store: tiny_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -359,6 +370,7 @@ fn full_stack_restart(seed: Seed) -> GauntletConfig {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -372,6 +384,9 @@ fn phase2_invariants() -> InvariantSet {
         | InvariantSet::BYTE_BUDGET
         | InvariantSet::MANIFEST_EQUALS_REALITY
         | InvariantSet::CHECKSUM_COVERAGE
+        | InvariantSet::INDEX_BACKED_BY_DISK
+        | InvariantSet::HINT_BACKED_BY_DATA
+        | InvariantSet::INDEX_BLOCKS_READABLE
 }
 
 fn catastrophic_churn(seed: Seed) -> GauntletConfig {
@@ -392,6 +407,7 @@ fn catastrophic_churn(seed: Seed) -> GauntletConfig {
         store: tiny_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -424,6 +440,7 @@ fn huge_values(seed: Seed) -> GauntletConfig {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -454,6 +471,7 @@ fn tiny_batches(seed: Seed) -> GauntletConfig {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -484,6 +502,7 @@ fn giant_batches(seed: Seed) -> GauntletConfig {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -509,6 +528,7 @@ fn many_files(seed: Seed) -> GauntletConfig {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -521,6 +541,9 @@ fn sim_invariants() -> InvariantSet {
         | InvariantSet::NO_ORPHAN_FILES
         | InvariantSet::BYTE_BUDGET
         | InvariantSet::CHECKSUM_COVERAGE
+        | InvariantSet::INDEX_BACKED_BY_DISK
+        | InvariantSet::HINT_BACKED_BY_DATA
+        | InvariantSet::INDEX_BLOCKS_READABLE
 }
 
 fn sim_microbench_workload() -> WorkloadModel {
@@ -558,6 +581,7 @@ fn moderate_faults(seed: Seed) -> GauntletConfig {
         store: sim_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -577,6 +601,7 @@ fn aggressive_faults(seed: Seed) -> GauntletConfig {
         store: sim_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -596,6 +621,7 @@ fn torn_pages(seed: Seed) -> GauntletConfig {
         store: sim_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -615,6 +641,7 @@ fn fsyncgate(seed: Seed) -> GauntletConfig {
         store: sim_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -654,6 +681,7 @@ fn firehose_fanout(seed: Seed) -> GauntletConfig {
             max_segment_size: MaxSegmentSize(64 * 1024),
         }),
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -688,6 +716,7 @@ fn contended_readers(seed: Seed) -> GauntletConfig {
         store: sim_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(64),
+        tolerate_op_errors: false,
     }
 }
 
@@ -719,6 +748,7 @@ fn flaky_device(seed: Seed) -> GauntletConfig {
         store: tiny_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -753,5 +783,35 @@ fn contended_writers(seed: Seed) -> GauntletConfig {
         store: sim_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(32),
+        tolerate_op_errors: false,
+    }
+}
+
+fn external_corruption(seed: Seed) -> GauntletConfig {
+    GauntletConfig {
+        seed,
+        io: IoBackend::Real,
+        workload: block_workload(
+            OpWeights {
+                add: 50,
+                delete: 30,
+                compact: 18,
+                checkpoint: 1,
+                external_delete_data_file: 1,
+                ..OpWeights::default()
+            },
+            SizeDistribution::Fixed(ValueBytes(128)),
+            KeySpaceSize(200),
+        ),
+        op_count: OpCount(2_000),
+        invariants: InvariantSet::NO_ORPHAN_FILES | InvariantSet::BYTE_BUDGET,
+        limits: RunLimits {
+            max_wall_ms: Some(WallMs(60_000)),
+        },
+        restart_policy: RestartPolicy::EveryNOps(OpInterval(1_000)),
+        store: tiny_store(),
+        eventlog: None,
+        writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: true,
     }
 }

@@ -76,6 +76,7 @@ fn tiny_config() -> GauntletConfig {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 

@@ -29,6 +29,9 @@ pub enum EventKind {
     Sync,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FileChoice(pub u32);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op {
     AddRecord {
@@ -57,6 +60,9 @@ pub enum Op {
     },
     ReadBlock {
         value_seed: ValueSeed,
+    },
+    ExternalDeleteDataFile {
+        choice: FileChoice,
     },
 }
 

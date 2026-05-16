@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cid::Cid;
 
@@ -29,6 +29,7 @@ pub struct Oracle {
     unsynced_events: Vec<EventExpectation>,
     last_synced_seq: Option<EventSequence>,
     last_retention_cutoff_us: Option<u64>,
+    lost_blocks: HashSet<CidBytes>,
 }
 
 impl Oracle {
@@ -91,6 +92,27 @@ impl Oracle {
 
     pub fn record_event_append(&mut self, event: EventExpectation) {
         self.unsynced_events.push(event);
+    }
+
+    pub fn mark_blocks_lost(&mut self, cids: impl IntoIterator<Item = CidBytes>) -> usize {
+        let added: HashSet<CidBytes> = cids.into_iter().collect();
+        let added_count = added.len();
+        self.live
+            .retain(|_, record_cid| !added.contains(record_cid));
+        self.lost_blocks.extend(added);
+        added_count
+    }
+
+    pub fn lost_blocks(&self) -> &HashSet<CidBytes> {
+        &self.lost_blocks
+    }
+
+    pub fn is_block_lost(&self, cid: &CidBytes) -> bool {
+        self.lost_blocks.contains(cid)
+    }
+
+    pub fn has_lost_blocks(&self) -> bool {
+        !self.lost_blocks.is_empty()
     }
 
     pub fn record_event_sync(&mut self, synced_through: EventSequence) {

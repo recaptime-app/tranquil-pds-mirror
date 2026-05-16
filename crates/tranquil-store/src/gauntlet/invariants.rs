@@ -31,6 +31,9 @@ impl InvariantSet {
     pub const MONOTONIC_SEQ: Self = Self(1 << 10);
     pub const FSYNC_ORDERING: Self = Self(1 << 11);
     pub const TOMBSTONE_BOUND: Self = Self(1 << 12);
+    pub const INDEX_BACKED_BY_DISK: Self = Self(1 << 13);
+    pub const HINT_BACKED_BY_DATA: Self = Self(1 << 14);
+    pub const INDEX_BLOCKS_READABLE: Self = Self(1 << 15);
 
     const ALL_KNOWN: u32 = Self::REFCOUNT_CONSERVATION.0
         | Self::REACHABILITY.0
@@ -44,7 +47,10 @@ impl InvariantSet {
         | Self::CHECKSUM_COVERAGE.0
         | Self::MONOTONIC_SEQ.0
         | Self::FSYNC_ORDERING.0
-        | Self::TOMBSTONE_BOUND.0;
+        | Self::TOMBSTONE_BOUND.0
+        | Self::INDEX_BACKED_BY_DISK.0
+        | Self::HINT_BACKED_BY_DATA.0
+        | Self::INDEX_BLOCKS_READABLE.0;
 
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
@@ -375,6 +381,164 @@ fn compact_by_liveness<S: StorageIO + Send + Sync + 'static>(
             Err(CompactionError::ActiveFileCannotBeCompacted) => Ok(()),
             Err(e) => Err(format!("{fid}: {e}")),
         })
+}
+
+pub struct HintBackedByData;
+
+#[async_trait]
+impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for HintBackedByData {
+    fn name(&self) -> &'static str {
+        "HintBackedByData"
+    }
+
+    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+        let store_c = ctx.store.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let data: std::collections::HashSet<_> = store_c
+                .list_data_files()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .collect();
+            let hints = store_c.list_hint_files().map_err(|e| e.to_string())?;
+            let orphans: Vec<String> = hints
+                .iter()
+                .filter(|fid| !data.contains(fid))
+                .map(|fid| fid.to_string())
+                .collect();
+            Ok::<_, String>(orphans)
+        })
+        .await
+        .map_err(|e| InvariantViolation {
+            invariant: "HintBackedByData",
+            detail: format!("join: {e}"),
+        })?;
+
+        let orphans = result.map_err(|e| InvariantViolation {
+            invariant: "HintBackedByData",
+            detail: e,
+        })?;
+
+        if orphans.is_empty() {
+            Ok(())
+        } else {
+            Err(InvariantViolation {
+                invariant: "HintBackedByData",
+                detail: format!(
+                    "hint files without matching data file (orphan hints): {}",
+                    orphans.join(", ")
+                ),
+            })
+        }
+    }
+}
+
+pub struct IndexBlocksReadable;
+
+#[async_trait]
+impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for IndexBlocksReadable {
+    fn name(&self) -> &'static str {
+        "IndexBlocksReadable"
+    }
+
+    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+        let store_c = ctx.store.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let entries = store_c.block_index().live_entries_snapshot();
+            let unreadable: Vec<String> = entries
+                .iter()
+                .take(INDEX_READABLE_SAMPLE_CAP)
+                .filter_map(|(cid, _)| match store_c.get_block_sync(cid) {
+                    Ok(Some(_)) => None,
+                    Ok(None) => Some(format!(
+                        "{}: index says present but reader missed",
+                        hex_short(cid)
+                    )),
+                    Err(e) => Some(format!("{}: read error {e}", hex_short(cid))),
+                })
+                .take(INDEX_READABLE_REPORT_CAP)
+                .collect();
+            Ok::<_, String>(unreadable)
+        })
+        .await
+        .map_err(|e| InvariantViolation {
+            invariant: "IndexBlocksReadable",
+            detail: format!("join: {e}"),
+        })?;
+
+        let unreadable = result.map_err(|e| InvariantViolation {
+            invariant: "IndexBlocksReadable",
+            detail: e,
+        })?;
+
+        if unreadable.is_empty() {
+            Ok(())
+        } else {
+            Err(InvariantViolation {
+                invariant: "IndexBlocksReadable",
+                detail: format!(
+                    "live index entries cannot be read back (first {INDEX_READABLE_REPORT_CAP}): {}",
+                    unreadable.join("; ")
+                ),
+            })
+        }
+    }
+}
+
+const INDEX_READABLE_SAMPLE_CAP: usize = 512;
+const INDEX_READABLE_REPORT_CAP: usize = 20;
+
+pub struct IndexBackedByDisk;
+
+#[async_trait]
+impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for IndexBackedByDisk {
+    fn name(&self) -> &'static str {
+        "IndexBackedByDisk"
+    }
+
+    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+        let store_c = ctx.store.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let disk: std::collections::HashSet<_> = store_c
+                .list_data_files()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .collect();
+            let liveness = store_c.compaction_liveness(0).map_err(|e| e.to_string())?;
+            let missing: Vec<String> = liveness
+                .iter()
+                .filter(|(fid, _)| !disk.contains(fid))
+                .map(|(fid, info)| {
+                    format!(
+                        "{fid} (live_blocks={}, total_blocks={})",
+                        info.live_blocks, info.total_blocks
+                    )
+                })
+                .collect();
+            Ok::<_, String>(missing)
+        })
+        .await
+        .map_err(|e| InvariantViolation {
+            invariant: "IndexBackedByDisk",
+            detail: format!("join: {e}"),
+        })?;
+
+        let missing = result.map_err(|e| InvariantViolation {
+            invariant: "IndexBackedByDisk",
+            detail: e,
+        })?;
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(InvariantViolation {
+                invariant: "IndexBackedByDisk",
+                detail: format!(
+                    "index references data files missing on disk (iris-shaped corruption): {}",
+                    missing.join(", ")
+                ),
+            })
+        }
+    }
 }
 
 pub struct NoOrphanFiles;
@@ -766,6 +930,18 @@ pub fn invariants_for<S: StorageIO + Send + Sync + 'static>(
             Box::new(CompactionIdempotent),
         ),
         (InvariantSet::NO_ORPHAN_FILES, Box::new(NoOrphanFiles)),
+        (
+            InvariantSet::INDEX_BACKED_BY_DISK,
+            Box::new(IndexBackedByDisk),
+        ),
+        (
+            InvariantSet::HINT_BACKED_BY_DATA,
+            Box::new(HintBackedByData),
+        ),
+        (
+            InvariantSet::INDEX_BLOCKS_READABLE,
+            Box::new(IndexBlocksReadable),
+        ),
         (InvariantSet::BYTE_BUDGET, Box::new(ByteBudget::default())),
         (
             InvariantSet::MANIFEST_EQUALS_REALITY,

@@ -142,6 +142,7 @@ mod tests {
             },
             eventlog: None,
             writer_concurrency: WriterConcurrency(1),
+            tolerate_op_errors: false,
         }
     }
 

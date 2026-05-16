@@ -93,6 +93,7 @@ pub struct GauntletConfig {
     pub store: StoreConfig,
     pub eventlog: Option<EventLogConfig>,
     pub writer_concurrency: WriterConcurrency,
+    pub tolerate_op_errors: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -287,6 +288,7 @@ async fn run_inner_real(
         None => tempfile::TempDir::new().expect("tempdir"),
     };
     let root = dir.path().to_path_buf();
+    let tolerate = config.tolerate_op_errors;
     let report = run_inner_real_on_root(
         config,
         root,
@@ -294,7 +296,7 @@ async fn run_inner_real(
         ops_counter,
         op_errors_counter,
         restarts_counter,
-        false,
+        tolerate,
         Duration::ZERO,
     )
     .await;
@@ -432,7 +434,7 @@ async fn run_inner_simulated(
 ) -> GauntletReport {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let cfg = blockstore_config(dir.path(), &config.store);
-    let tolerate_errors = fault.injects_errors();
+    let tolerate_errors = fault.injects_errors() || config.tolerate_op_errors;
     let eventlog_cfg = config.eventlog;
     let segments_dir = segments_subdir(dir.path());
     let sim: Arc<SimulatedIO> = Arc::new(SimulatedIO::new(config.seed.0, fault));
@@ -828,7 +830,6 @@ async fn run_quick_check<S: StorageIO + Send + Sync + 'static>(
         };
     };
 
-    let mst = Mst::load(store.clone(), r, None);
     let live: Vec<(super::op::CollectionName, super::op::RecordKey, CidBytes)> = oracle
         .live_records()
         .map(|(c, k, v)| (c.clone(), k.clone(), *v))
@@ -840,24 +841,39 @@ async fn run_quick_check<S: StorageIO + Send + Sync + 'static>(
         sample_distinct(rng, total, sample_size)
     };
 
-    let mut violations: Vec<String> = Vec::new();
-    for idx in picks {
-        let (coll, rkey, expected) = &live[idx];
-        let key = format!("{}/{}", coll.0, rkey.0);
-        match mst.get(&key).await {
-            Ok(Some(cid)) => match try_cid_to_fixed(&cid) {
-                Ok(actual) if actual == *expected => {}
-                Ok(actual) => violations.push(format!(
-                    "{key}: MST cid {} != oracle cid {}",
-                    hex_short(&actual),
-                    hex_short(expected)
-                )),
-                Err(e) => violations.push(format!("{key}: cid format: {e}")),
-            },
-            Ok(None) => violations.push(format!("{key}: missing after reopen")),
-            Err(e) => violations.push(format!("{key}: mst.get error: {e}")),
-        }
-    }
+    let store_c = store.clone();
+    let lost_clone = oracle.lost_blocks().clone();
+    let live_clone = live.clone();
+    let picks_c = picks.clone();
+    let violations: Vec<String> = tokio::task::spawn_blocking(move || {
+        picks_c
+            .iter()
+            .filter_map(|&idx| {
+                let (coll, rkey, expected) = &live_clone[idx];
+                let key = format!("{}/{}", coll.0, rkey.0);
+                match super::chaos_walker::mst_get_tolerant(&store_c, r, &key, &lost_clone) {
+                    Ok(super::chaos_walker::LookupResult::Found(cid)) => {
+                        match try_cid_to_fixed(&cid) {
+                            Ok(actual) if actual == *expected => None,
+                            Ok(actual) => Some(format!(
+                                "{key}: MST cid {} != oracle cid {}",
+                                hex_short(&actual),
+                                hex_short(expected)
+                            )),
+                            Err(e) => Some(format!("{key}: cid format: {e}")),
+                        }
+                    }
+                    Ok(super::chaos_walker::LookupResult::NotFound) => {
+                        Some(format!("{key}: missing after reopen"))
+                    }
+                    Ok(super::chaos_walker::LookupResult::LostPath) => None,
+                    Err(e) => Some(format!("{key}: mst.get error: {e}")),
+                }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_else(|e| vec![format!("quick_check join: {e}")]);
 
     if violations.is_empty() {
         Vec::new()
@@ -967,16 +983,13 @@ pub(super) async fn refresh_oracle_graph<S: StorageIO + Send + Sync + 'static>(
             Ok(())
         }
         Some(r) => {
-            let settled = Mst::load(store.clone(), r, None);
-            let cids = settled
-                .collect_node_cids()
-                .await
-                .map_err(|e| format!("collect_node_cids: {e}"))?;
-            let fixed: Vec<CidBytes> = cids
-                .iter()
-                .map(try_cid_to_fixed)
-                .collect::<Result<_, _>>()
-                .map_err(|e| format!("mst node cid: {e}"))?;
+            let store_c = store.clone();
+            let lost_clone = oracle.lost_blocks().clone();
+            let fixed = tokio::task::spawn_blocking(move || {
+                super::chaos_walker::walk_mst_node_cids_tolerant(&store_c, r, &lost_clone)
+            })
+            .await
+            .map_err(|e| format!("refresh join: {e}"))??;
             oracle.set_root(r);
             oracle.set_mst_node_cids(fixed);
             Ok(())
@@ -1200,6 +1213,39 @@ pub(super) async fn apply_op<S: StorageIO + Send + Sync + 'static>(
             let _ = harness.store.get_block_sync(&record_cid);
             Ok(())
         }
+        Op::ExternalDeleteDataFile { choice } => {
+            let s = harness.store.clone();
+            let pick = choice.0;
+            let lost_cids = tokio::task::spawn_blocking(move || externally_delete_data_file(&s, pick))
+                .await
+                .map_err(|e| OpError::Join(e.to_string()))??;
+            if !lost_cids.is_empty() {
+                oracle.mark_blocks_lost(lost_cids);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn externally_delete_data_file(
+    store: &std::sync::Arc<TranquilBlockStore<impl StorageIO + 'static>>,
+    pick: u32,
+) -> Result<Vec<CidBytes>, OpError> {
+    let active = store.block_index().read_write_cursor().map(|c| c.file_id);
+    let mut candidates = match store.list_data_files() {
+        Ok(files) => files,
+        Err(_) => return Ok(Vec::new()),
+    };
+    candidates.retain(|fid| active.is_none_or(|a| *fid < a));
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let idx = (pick as usize) % candidates.len();
+    let victim = candidates[idx];
+    let cids = store.block_index().cids_in_file(victim);
+    match std::fs::remove_file(store.data_file_path(victim)) {
+        Ok(()) => Ok(cids),
+        Err(_) => Ok(Vec::new()),
     }
 }
 
@@ -1509,6 +1555,18 @@ async fn apply_op_concurrent<S: StorageIO + Send + Sync + 'static>(
             let record_bytes = make_record_bytes(*value_seed, workload.size_distribution);
             let record_cid = hash_to_cid_bytes(&record_bytes);
             let _ = shared.store.get_block_sync(&record_cid);
+            Ok(())
+        }
+        Op::ExternalDeleteDataFile { choice } => {
+            let mut guard = shared.write.lock().await;
+            let s = shared.store.clone();
+            let pick = choice.0;
+            let lost_cids = tokio::task::spawn_blocking(move || externally_delete_data_file(&s, pick))
+                .await
+                .map_err(|e| OpError::Join(e.to_string()))??;
+            if !lost_cids.is_empty() {
+                guard.oracle.mark_blocks_lost(lost_cids);
+            }
             Ok(())
         }
     }
@@ -1848,6 +1906,7 @@ mod tests {
             },
             eventlog: None,
             writer_concurrency: WriterConcurrency(1),
+            tolerate_op_errors: false,
         }
     }
 

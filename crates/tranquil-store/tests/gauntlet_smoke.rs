@@ -82,6 +82,7 @@ fn fast_sanity_config(seed: Seed) -> GauntletConfig {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }
 
@@ -142,6 +143,7 @@ async fn compaction_idempotent_sanity() {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     };
     let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
     assert_clean(&report);
@@ -181,6 +183,7 @@ async fn no_orphan_files_sanity() {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     };
     let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
     assert_clean(&report);
@@ -225,6 +228,7 @@ async fn simulated_pristine_roundtrip() {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     };
     let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
     assert_clean(&report);
@@ -279,6 +283,7 @@ async fn firehose_fanout_pristine_smoke() {
             max_segment_size: MaxSegmentSize(32 * 1024),
         }),
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     };
     let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
     assert_clean(&report);
@@ -325,6 +330,7 @@ async fn contended_readers_pristine_smoke() {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(16),
+        tolerate_op_errors: false,
     };
     let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
     assert_clean(&report);
@@ -372,6 +378,7 @@ async fn contended_writers_pristine_smoke() {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(8),
+        tolerate_op_errors: false,
     };
     let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
     assert_clean(&report);
@@ -505,6 +512,7 @@ async fn torn_pages_only_completes_within_budget() {
         },
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     };
     let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
     let budget_violations: Vec<&str> = report
@@ -553,11 +561,8 @@ fn farm_run_many_timed_with_scratch_roots_honors_assignment() {
     std::fs::create_dir_all(&root_a).expect("mkdir a");
     std::fs::create_dir_all(&root_b).expect("mkdir b");
     let roots = vec![root_a.clone(), root_b.clone()];
-    let reports = farm::run_many_timed_with_scratch_roots(
-        fast_sanity_config,
-        &roots,
-        (0..2).map(Seed),
-    );
+    let reports =
+        farm::run_many_timed_with_scratch_roots(fast_sanity_config, &roots, (0..2).map(Seed));
     assert_eq!(reports.len(), 2);
     reports.iter().for_each(|(r, _)| assert_clean(r));
     [&root_a, &root_b].iter().for_each(|root| {
