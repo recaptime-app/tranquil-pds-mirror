@@ -124,6 +124,7 @@ fn verify_integrity(stores: &TestStores, oracle: &SoakOracle) {
 }
 
 #[test]
+#[ignore = "wall-clock soak, 30min runtime. Reenable once we mock time for deterministic soak"]
 fn sim_soak_continuous_operations_with_crash_recovery() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
