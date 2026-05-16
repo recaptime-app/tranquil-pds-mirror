@@ -30,8 +30,8 @@ pub use store::QuiesceGuard;
 pub use store::{BlockStoreConfig, DEFAULT_SHARD_COUNT, OpenRetryPolicy, TranquilBlockStore};
 pub use types::{
     BlockLength, BlockLocation, BlockOffset, BlockstoreSnapshot, CidBytes, CollectionResult,
-    CommitEpoch, CompactionResult, DataFileId, EpochCounter, HintOffset, IndexEntry, LivenessInfo,
-    MAX_BLOCK_SIZE, RefCount, ShardId, WallClockMs, WriteCursor,
+    CommitEpoch, CompactionResult, CompactionStats, DataFileId, EpochCounter, HintOffset,
+    IndexEntry, LivenessInfo, MAX_BLOCK_SIZE, RefCount, ShardId, WallClockMs, WriteCursor,
 };
 
 use std::io;

@@ -579,9 +579,14 @@ fn all_dead_file_compaction() {
         advance_epoch(&store);
         std::thread::sleep(std::time::Duration::from_millis(5));
 
-        let result = store.compact_file(first_file, 0).unwrap();
-        assert_eq!(result.live_blocks, 0);
-        assert!(result.dead_blocks > 0);
+        let stats = match store.compact_file(first_file, 0).unwrap() {
+            tranquil_store::blockstore::CompactionResult::Compacted(s) => s,
+            tranquil_store::blockstore::CompactionResult::Purged { .. } => {
+                panic!("expected compaction, got phantom purge")
+            }
+        };
+        assert_eq!(stats.live_blocks, 0);
+        assert!(stats.dead_blocks > 0);
 
         (0u32..5).for_each(|seed| {
             let data = store.get_block_sync(&test_cid_u32(seed)).unwrap();
@@ -838,10 +843,15 @@ fn grace_period_prevents_collection_during_active_write() {
 
         let files = store.list_data_files().unwrap();
         let first_file = files[0];
-        let result = store.compact_file(first_file, 600_000).unwrap();
+        let stats = match store.compact_file(first_file, 600_000).unwrap() {
+            tranquil_store::blockstore::CompactionResult::Compacted(s) => s,
+            tranquil_store::blockstore::CompactionResult::Purged { .. } => {
+                panic!("expected compaction, got phantom purge")
+            }
+        };
 
         assert_eq!(
-            result.dead_blocks, 0,
+            stats.dead_blocks, 0,
             "grace period should prevent any collection"
         );
 

@@ -68,13 +68,32 @@ pub struct CollectionResult {
     pub total_bytes: u64,
 }
 
-pub struct CompactionResult {
+#[derive(Debug)]
+pub struct CompactionStats {
     pub file_id: DataFileId,
     pub old_size: u64,
     pub new_size: u64,
     pub live_blocks: u64,
     pub dead_blocks: u64,
     pub reclaimed_bytes: u64,
+}
+
+#[derive(Debug)]
+pub enum CompactionResult {
+    Compacted(CompactionStats),
+    Purged {
+        file_id: DataFileId,
+        phantom_blocks: u64,
+    },
+}
+
+impl CompactionResult {
+    pub fn file_id(&self) -> DataFileId {
+        match self {
+            Self::Compacted(stats) => stats.file_id,
+            Self::Purged { file_id, .. } => *file_id,
+        }
+    }
 }
 
 pub struct LivenessInfo {

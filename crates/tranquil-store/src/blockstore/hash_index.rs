@@ -606,6 +606,27 @@ impl HashTable {
         });
     }
 
+    pub fn purge_by_file_id(&mut self, file_id: DataFileId) -> u64 {
+        let victims: Vec<(CidBytes, RefCount)> = self
+            .iter()
+            .filter(|s| s.file_id == file_id)
+            .map(|s| (s.cid, s.refcount))
+            .collect();
+
+        let live_discarded = victims.iter().filter(|(_, rc)| !rc.is_zero()).count();
+        if live_discarded > 0 {
+            tracing::warn!(
+                file_id = %file_id,
+                live_discarded,
+                total_purged = victims.len(),
+                "discarding live index entries for missing data file"
+            );
+        }
+
+        let removed = victims.iter().filter(|(cid, _)| self.remove(cid)).count();
+        u64::try_from(removed).unwrap_or(u64::MAX)
+    }
+
     pub fn cleanup_stale_gc(&mut self) -> u64 {
         self.slots
             .iter_mut()
@@ -1501,6 +1522,10 @@ impl BlockIndex {
                 }
                 _ => acc,
             })
+    }
+
+    pub fn purge_by_file_id(&self, file_id: DataFileId) -> u64 {
+        self.table.write().purge_by_file_id(file_id)
     }
 
     pub fn read_write_cursor(&self) -> Option<WriteCursor> {

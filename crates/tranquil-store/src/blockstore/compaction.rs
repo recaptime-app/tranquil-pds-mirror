@@ -7,7 +7,9 @@ use super::group_commit::{ActiveFileSet, FileIdAllocator};
 use super::hash_index::{BlockIndex, BlockIndexError};
 use super::hint::{HintFileWriter, hint_file_path};
 use super::manager::DataFileManager;
-use super::types::{BlockLocation, CidBytes, CommitEpoch, CompactionResult, DataFileId};
+use super::types::{
+    BlockLocation, CidBytes, CommitEpoch, CompactionResult, CompactionStats, DataFileId,
+};
 
 #[derive(Debug)]
 pub enum CompactionError {
@@ -68,7 +70,13 @@ pub(super) fn compact_on_writer_thread<S: StorageIO>(
         return Err(CompactionError::ActiveFileCannotBeCompacted);
     }
 
-    let source_handle = manager.open_for_read(source_file_id)?;
+    let source_handle = match manager.open_for_read(source_file_id) {
+        Ok(handle) => handle,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return purge_phantom_file(manager, index, hint_positions, epoch, source_file_id);
+        }
+        Err(e) => return Err(CompactionError::Io(e)),
+    };
     let source_size = manager.io().file_size(source_handle.fd())?;
 
     let new_file_id = file_ids.allocate();
@@ -92,10 +100,16 @@ pub(super) fn compact_on_writer_thread<S: StorageIO>(
                 .ok();
             Err(e)
         }
-        Ok((new_size, live_count, dead_count)) => {
-            if let Err(e) = index.write_checkpoint(epoch.current(), hint_positions) {
-                tracing::warn!(error = %e, "pre-delete checkpoint failed during compaction");
+        Ok((new_size, live_count, dead_count, new_hint_offset)) => {
+            match live_count {
+                0 => hint_positions.forget_extra(new_file_id),
+                _ => hint_positions.record_extra(new_file_id, new_hint_offset),
             }
+            hint_positions.forget_extra(source_file_id);
+
+            index
+                .write_checkpoint(epoch.current(), hint_positions)
+                .map_err(CompactionError::Io)?;
 
             manager.delete_data_file(source_file_id)?;
             manager
@@ -124,16 +138,49 @@ pub(super) fn compact_on_writer_thread<S: StorageIO>(
                 "compaction complete"
             );
 
-            Ok(CompactionResult {
+            Ok(CompactionResult::Compacted(CompactionStats {
                 file_id: source_file_id,
                 old_size: source_size,
                 new_size,
                 live_blocks: live_count,
                 dead_blocks: dead_count,
                 reclaimed_bytes,
-            })
+            }))
         }
     }
+}
+
+fn purge_phantom_file<S: StorageIO>(
+    manager: &DataFileManager<S>,
+    index: &BlockIndex,
+    hint_positions: &super::group_commit::ShardHintPositions,
+    epoch: &super::types::EpochCounter,
+    source_file_id: DataFileId,
+) -> Result<CompactionResult, CompactionError> {
+    let phantom_blocks = index.purge_by_file_id(source_file_id);
+
+    tracing::warn!(
+        file_id = %source_file_id,
+        phantom_blocks,
+        "source data file missing on disk, purged phantom index entries"
+    );
+
+    hint_positions.forget_extra(source_file_id);
+
+    manager
+        .io()
+        .delete(&hint_file_path(manager.data_dir(), source_file_id))
+        .ok();
+    manager.io().sync_dir(manager.data_dir()).ok();
+
+    index
+        .write_checkpoint(epoch.current(), hint_positions)
+        .map_err(CompactionError::Io)?;
+
+    Ok(CompactionResult::Purged {
+        file_id: source_file_id,
+        phantom_blocks,
+    })
 }
 
 fn stream_compact<S: StorageIO>(
@@ -144,7 +191,7 @@ fn stream_compact<S: StorageIO>(
     new_file_id: DataFileId,
     current_epoch: CommitEpoch,
     grace_period_ms: u64,
-) -> Result<(u64, u64, u64), CompactionError> {
+) -> Result<(u64, u64, u64, super::types::HintOffset), CompactionError> {
     let mut reader = DataFileReader::open(manager.io(), source_fd)?;
     let now = crate::wall_clock_ms();
 
@@ -225,6 +272,7 @@ fn stream_compact<S: StorageIO>(
         })
         .and_then(|()| manager.io().barrier().map_err(CompactionError::from));
 
+    let final_hint_offset = hint_writer.position();
     let _ = manager.io().close(hint_fd);
 
     finalize_result?;
@@ -233,5 +281,5 @@ fn stream_compact<S: StorageIO>(
 
     index.apply_compaction(&relocations, &dead_cids);
 
-    Ok((new_size, live_count, dead_count))
+    Ok((new_size, live_count, dead_count, final_hint_offset))
 }

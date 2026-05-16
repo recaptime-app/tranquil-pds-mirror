@@ -193,10 +193,15 @@ fn compact_data_file_preserves_live_removes_dead() {
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
 
-        let result = store.compact_file(first_file, 0).unwrap();
-        assert!(result.dead_blocks > 0, "should have removed dead blocks");
-        assert!(result.live_blocks > 0, "should have preserved live blocks");
-        assert!(result.reclaimed_bytes > 0, "should have reclaimed space");
+        let stats = match store.compact_file(first_file, 0).unwrap() {
+            tranquil_store::blockstore::CompactionResult::Compacted(s) => s,
+            tranquil_store::blockstore::CompactionResult::Purged { .. } => {
+                panic!("expected compaction, got phantom purge")
+            }
+        };
+        assert!(stats.dead_blocks > 0, "should have removed dead blocks");
+        assert!(stats.live_blocks > 0, "should have preserved live blocks");
+        assert!(stats.reclaimed_bytes > 0, "should have reclaimed space");
 
         [1u8, 3].iter().for_each(|&seed| {
             let data = store.get_block_sync(&test_cid(seed)).unwrap();

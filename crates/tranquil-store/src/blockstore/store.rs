@@ -599,6 +599,16 @@ impl<S: StorageIO + Send + Sync + 'static> TranquilBlockStore<S> {
             .map_err(RepoError::storage)
     }
 
+    pub fn list_hint_files(&self) -> Result<Vec<DataFileId>, RepoError> {
+        let io = self.reader.manager().io();
+        super::list_files_by_extension(io, &self.data_dir, super::hint::HINT_FILE_EXTENSION)
+            .map_err(RepoError::storage)
+    }
+
+    pub fn hint_file_path(&self, file_id: DataFileId) -> std::path::PathBuf {
+        super::hint::hint_file_path(&self.data_dir, file_id)
+    }
+
     pub fn put_blocks_blocking(
         &self,
         blocks: Vec<([u8; CID_SIZE], Vec<u8>)>,

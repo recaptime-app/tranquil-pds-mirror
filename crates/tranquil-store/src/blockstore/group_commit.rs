@@ -74,30 +74,49 @@ impl ActiveFileSet {
 }
 
 pub struct ShardHintPositions {
-    positions: RwLock<Vec<(DataFileId, HintOffset)>>,
+    shard_positions: RwLock<Vec<(DataFileId, HintOffset)>>,
+    extra_positions: RwLock<HashMap<DataFileId, HintOffset>>,
 }
 
 impl ShardHintPositions {
     pub fn new(shard_count: u8) -> Self {
         Self {
-            positions: RwLock::new(
+            shard_positions: RwLock::new(
                 (0..shard_count as usize)
                     .map(|_| (DataFileId::new(0), HintOffset::new(0)))
                     .collect(),
             ),
+            extra_positions: RwLock::new(HashMap::new()),
         }
     }
 
     pub fn update(&self, shard_id: ShardId, file_id: DataFileId, offset: HintOffset) {
-        let mut positions = self.positions.write();
+        let mut positions = self.shard_positions.write();
         let idx = shard_id.as_usize();
         if idx < positions.len() {
             positions[idx] = (file_id, offset);
         }
     }
 
+    pub fn record_extra(&self, file_id: DataFileId, offset: HintOffset) {
+        self.extra_positions.write().insert(file_id, offset);
+    }
+
+    pub fn forget_extra(&self, file_id: DataFileId) {
+        self.extra_positions.write().remove(&file_id);
+    }
+
     pub fn snapshot(&self) -> CheckpointPositions {
-        CheckpointPositions(self.positions.read().clone())
+        let shard = self.shard_positions.read().clone();
+        let extra = self.extra_positions.read().clone();
+        debug_assert!(
+            shard
+                .iter()
+                .filter(|(fid, _)| fid.raw() != 0)
+                .all(|(fid, _)| !extra.contains_key(fid)),
+            "shard_positions and extra_positions must not overlap on the same DataFileId"
+        );
+        CheckpointPositions(shard.into_iter().chain(extra).collect())
     }
 }
 
