@@ -580,6 +580,18 @@ fn wire_tranquil_store(
                     "repaired orphan data files"
                 );
             }
+            if repair.orphan_hints_removed > 0 {
+                tracing::info!(
+                    removed = repair.orphan_hints_removed,
+                    "repaired orphan hint files"
+                );
+            }
+            if repair.phantom_index_entries_purged > 0 {
+                tracing::info!(
+                    purged = repair.phantom_index_entries_purged,
+                    "purged phantom index entries pointing at missing data files"
+                );
+            }
             if repair.had_errors() {
                 tracing::warn!(errors = repair.repair_errors, "some repairs failed");
             }

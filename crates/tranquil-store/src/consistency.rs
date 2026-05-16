@@ -28,6 +28,8 @@ pub struct ConsistencyReport {
     pub orphaned_user_repos: Vec<OrphanedUserRepo>,
     pub inconsistent_handles: Vec<InconsistentHandle>,
     pub orphan_data_files: Vec<DataFileId>,
+    pub orphan_hint_files: Vec<DataFileId>,
+    pub missing_indexed_files: Vec<DataFileId>,
     pub deserialization_failures: u64,
     pub eventlog_contiguity: Option<SequenceContiguityResult>,
     pub cursor_ahead_of_eventlog: bool,
@@ -74,6 +76,8 @@ impl ConsistencyReport {
             && self.orphaned_user_repos.is_empty()
             && self.inconsistent_handles.is_empty()
             && self.orphan_data_files.is_empty()
+            && self.orphan_hint_files.is_empty()
+            && self.missing_indexed_files.is_empty()
             && self.deserialization_failures == 0
             && self
                 .eventlog_contiguity
@@ -84,6 +88,8 @@ impl ConsistencyReport {
 
     pub fn has_repairable_issues(&self) -> bool {
         !self.orphan_data_files.is_empty()
+            || !self.orphan_hint_files.is_empty()
+            || !self.missing_indexed_files.is_empty()
     }
 
     pub fn has_unrecoverable_issues(&self) -> bool {
@@ -136,6 +142,20 @@ impl ConsistencyReport {
                 "orphan data files with no index references"
             );
         }
+        if !self.orphan_hint_files.is_empty() {
+            tracing::warn!(
+                count = self.orphan_hint_files.len(),
+                files = ?self.orphan_hint_files,
+                "orphan hint files with no matching data file"
+            );
+        }
+        if !self.missing_indexed_files.is_empty() {
+            tracing::warn!(
+                count = self.missing_indexed_files.len(),
+                files = ?self.missing_indexed_files,
+                "index references data files that are missing on disk"
+            );
+        }
         if self.deserialization_failures > 0 {
             tracing::error!(
                 count = self.deserialization_failures,
@@ -181,13 +201,15 @@ impl fmt::Display for ConsistencyReport {
         write!(
             f,
             "INCONSISTENT: dangling_roots={}, dangling_records={}, orphaned_repos={}, \
-             inconsistent_handles={}, orphan_files={}, deserialize_failures={}, \
-             eventlog_gaps={}, cursor_ahead={}",
+             inconsistent_handles={}, orphan_files={}, orphan_hints={}, missing_indexed_files={}, \
+             deserialize_failures={}, eventlog_gaps={}, cursor_ahead={}",
             self.dangling_root_cids.len(),
             self.dangling_record_cids.len(),
             self.orphaned_user_repos.len(),
             self.inconsistent_handles.len(),
             self.orphan_data_files.len(),
+            self.orphan_hint_files.len(),
+            self.missing_indexed_files.len(),
             self.deserialization_failures,
             self.eventlog_contiguity
                 .as_ref()
@@ -204,6 +226,8 @@ pub struct ConsistencyCheckOptions {
     pub check_user_blocks: bool,
     pub check_eventlog: bool,
     pub check_orphan_files: bool,
+    pub check_missing_indexed_files: bool,
+    pub check_orphan_hint_files: bool,
 }
 
 impl Default for ConsistencyCheckOptions {
@@ -214,6 +238,8 @@ impl Default for ConsistencyCheckOptions {
             check_user_blocks: true,
             check_eventlog: true,
             check_orphan_files: true,
+            check_missing_indexed_files: true,
+            check_orphan_hint_files: true,
         }
     }
 }
@@ -267,6 +293,14 @@ pub fn verify_store_consistency_with_options<S: StorageIO + 'static>(
 
     if options.check_orphan_files {
         check_orphan_data_files(blockstore, block_index, &mut report);
+    }
+
+    if options.check_missing_indexed_files {
+        check_missing_indexed_files(blockstore, block_index, &mut report);
+    }
+
+    if options.check_orphan_hint_files {
+        check_orphan_hint_files(blockstore, &mut report);
     }
 
     report
@@ -565,6 +599,52 @@ fn check_orphan_data_files(
     });
 }
 
+fn check_missing_indexed_files(
+    blockstore: &TranquilBlockStore,
+    block_index: &BlockIndex,
+    report: &mut ConsistencyReport,
+) {
+    let disk_files: HashSet<DataFileId> = match blockstore.list_data_files() {
+        Ok(files) => files.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to list data files for missing-file check");
+            return;
+        }
+    };
+
+    let epoch = blockstore.epoch().current();
+    let now = crate::wall_clock_ms();
+    let indexed_files = block_index.liveness_by_file(epoch, now, 0);
+
+    indexed_files
+        .iter()
+        .filter(|(fid, _)| !disk_files.contains(fid))
+        .for_each(|(fid, _)| report.missing_indexed_files.push(*fid));
+}
+
+fn check_orphan_hint_files(blockstore: &TranquilBlockStore, report: &mut ConsistencyReport) {
+    let data_files: HashSet<DataFileId> = match blockstore.list_data_files() {
+        Ok(files) => files.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to list data files for orphan-hint check");
+            return;
+        }
+    };
+
+    let hint_files = match blockstore.list_hint_files() {
+        Ok(files) => files,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to list hint files for orphan-hint check");
+            return;
+        }
+    };
+
+    hint_files
+        .iter()
+        .filter(|fid| !data_files.contains(fid))
+        .for_each(|fid| report.orphan_hint_files.push(*fid));
+}
+
 fn try_cid_bytes_to_fixed(bytes: &[u8]) -> Option<[u8; CID_SIZE]> {
     bytes.try_into().ok()
 }
@@ -621,12 +701,39 @@ pub fn repair_known_issues(
         }
     });
 
+    report.orphan_hint_files.iter().for_each(|&file_id| {
+        let path = blockstore.hint_file_path(file_id);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                tracing::info!(%file_id, "removed orphan hint file");
+                result.orphan_hints_removed = result.orphan_hints_removed.saturating_add(1);
+            }
+            Err(e) => {
+                tracing::warn!(%file_id, error = %e, "failed to remove orphan hint file");
+                result.repair_errors = result.repair_errors.saturating_add(1);
+            }
+        }
+    });
+
+    report.missing_indexed_files.iter().for_each(|&file_id| {
+        let purged = blockstore.block_index().purge_by_file_id(file_id);
+        tracing::info!(
+            %file_id,
+            purged,
+            "purged phantom index entries for missing data file"
+        );
+        result.phantom_index_entries_purged =
+            result.phantom_index_entries_purged.saturating_add(purged);
+    });
+
     result
 }
 
 #[derive(Debug, Default)]
 pub struct RepairResult {
     pub orphan_files_removed: u64,
+    pub orphan_hints_removed: u64,
+    pub phantom_index_entries_purged: u64,
     pub repair_errors: u64,
 }
 
