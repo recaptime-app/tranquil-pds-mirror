@@ -17,7 +17,7 @@ Please browse the example.toml at project root for all of them, we promise that 
 
 Apart from your personal technological taste, dear PDS admin, what other things might you take into account when choosing your config? Here's something for you to chew on: Tranquil aims to never "default" to Bluesky in the same way the reference does. There's no "default AppView" to fall back to with requests, we don't encourage you to talk to Bluesky relays (though they're big, decent, and themselves not Bluesky-specific). This philosophy is either a blessing or an achilles heel for Tranquil depending on how you look at things. For example, I mentioned not defaulting to an AppView: atproto apps that assume that a PDS *does* default to an AppView will find out the hard way that if they don't specify a request header called `atproto-proxy`, Tranquil does not forward on a request to any fallback. Why should we?
 
-// TODO: write an exhaustive list of problems using apps with Tranquil that are due to us trying better to follow spec
+> // 🦪 TODO: write an exhaustive list of problems using apps with Tranquil that are due to us trying better to follow spec
 
 Therefore that's a caveat to Tranquil, **you accidentally or purposefully help the whole atproto ecosystem be better** by the trial of apps literally not working for you unless they're correct.
 
@@ -36,7 +36,7 @@ When you first deploy, and you have invite codes required for your instance, you
 
 As an admin, there's a special page in the frontend where you can manage accounts. Right now it is quite barebones and honestly if it weren't for the option to delete accounts, we might simply recommend that you use [pds.ls](https://pds.ls).
 
-> Lewis
+> 🦪 Lewis
 >
 > We would like to write a client CLI for Tranquil and focus a lot of effort on that, including/especially for more fully-featured admin'ing.
 
@@ -44,7 +44,7 @@ As an admin, there's a special page in the frontend where you can manage account
 
 So you want to migrate your account from a different PDS to Tranquil? The UI of Tranquil does show that we have an in-house migrator web UI. It's as good as most migrator apps out there today, apart from [pdsmoover.com](https://pdsmoover.com). Using PDSMoover will tell you that you must verify your account before continuing to the last step, that's not their bug but our design - instead of bothering with captchas, that's a layer of security we have chosen. If you simply verify your account via the email/discord/telegram/signal link your PDS sent, you can just continue in PDSMoover immediately.
 
-> Lewis
+> 🦪 Lewis
 >
 > To be honest, writing a migrator has shown us that there's a need to redo migration from first principles -> right now migration involves many load-bearing steps, almost any one of which leaves you somewhere gross in the middle if something messes up. Imagine if we could just package up all the important data in one go beforehand, and shift it all at once in a retryable way...
 
