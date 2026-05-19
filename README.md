@@ -87,6 +87,7 @@ We currently don't have a shared space to chat and organize Tranquil things, but
 - [@a.starrysky.fyi](https://tangled.org/did:plc:uuyqs6y3pwtbteet4swt5i5y)
 - [@sans-self.org](https://tangled.org/did:plc:wydyrngmxbcsqdvhmd7whmye)
 - [@tachyonism.tngl.sh](https://tangled.org/did:plc:w6qiwij62bmdugsd3gemhpy2)
+- [@trezy.codes](https://tangled.org/did:plc:4jrld6fwpnwqehtce56qshzv)
 - Could be your name here too!
 
 ### Tranquil PDS instances in the wild!
