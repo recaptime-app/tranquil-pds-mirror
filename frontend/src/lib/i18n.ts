@@ -2,7 +2,7 @@ import { _, getLocaleFromNavigator, init, locale, register } from "svelte-i18n";
 
 const LOCALE_STORAGE_KEY = "tranquil-pds-locale";
 
-const SUPPORTED_LOCALES = ["en", "zh", "ja", "ko", "sv", "fi"] as const;
+const SUPPORTED_LOCALES = ["en", "zh", "ja", "ko", "sv", "fi", "fr"] as const;
 export type SupportedLocale = typeof SUPPORTED_LOCALES[number];
 
 export const localeNames: Record<SupportedLocale, string> = {
@@ -12,6 +12,7 @@ export const localeNames: Record<SupportedLocale, string> = {
   ko: "한국어",
   sv: "Svenska",
   fi: "Suomi",
+  fr: "Français",
 };
 
 register("en", () => import("../locales/en.json"));
@@ -20,6 +21,7 @@ register("ja", () => import("../locales/ja.json"));
 register("ko", () => import("../locales/ko.json"));
 register("sv", () => import("../locales/sv.json"));
 register("fi", () => import("../locales/fi.json"));
+register("fr", () => import("../locales/fr.json"));
 
 function getInitialLocale(): string {
   const stored = localStorage.getItem(LOCALE_STORAGE_KEY);

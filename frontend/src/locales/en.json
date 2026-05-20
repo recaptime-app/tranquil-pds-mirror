@@ -359,6 +359,7 @@
     "passwordRemoved": "Password removed. Your account is now passkey-only.",
     "failedToRemovePassword": "Failed to remove password",
     "failedToLoadTotpStatus": "Failed to load TOTP status",
+    "failedToRegenerateBackupCodes": "Failed to regenerate backup codes",
     "totpEnabledSuccess": "Two-factor authentication enabled successfully",
     "totpDisabledSuccess": "Two-factor authentication disabled",
     "backupCodesCopied": "Backup codes copied to clipboard",
@@ -490,6 +491,8 @@
     "invitesEnabled": "User invites enabled",
     "invitesDisabled": "User invites disabled",
     "userDeleted": "User account deleted",
+    "failedToDeleteAccount": "Failed to delete account",
+    "failedToSaveConfig": "Failed to save server configuration",
     "failedToLoadConfig": "Failed to load server configuration",
     "signalIntegration": "Signal",
     "signalLinked": "Linked",
@@ -597,7 +600,8 @@
     },
     "error": {
       "title": "Authorization failed",
-      "tryAgain": "Retry"
+      "tryAgain": "Retry",
+      "genericError": "An unexpected error occurred"
     }
   },
   "sso_register": {

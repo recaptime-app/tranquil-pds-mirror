@@ -1,5 +1,5 @@
 pub const DEFAULT_LOCALE: &str = "en";
-pub const VALID_LOCALES: &[&str] = &["en", "zh", "ja", "ko", "sv", "fi"];
+pub const VALID_LOCALES: &[&str] = &["en", "zh", "ja", "ko", "sv", "fi", "fr"];
 
 pub fn validate_locale(locale: &str) -> &str {
     if VALID_LOCALES.contains(&locale) {
@@ -44,6 +44,7 @@ pub fn get_strings(locale: &str) -> &'static NotificationStrings {
         "ko" => &STRINGS_KO,
         "sv" => &STRINGS_SV,
         "fi" => &STRINGS_FI,
+        "fr" => &STRINGS_FR,
         _ => &STRINGS_EN,
     }
 }
@@ -216,6 +217,34 @@ static STRINGS_FI: NotificationStrings = NotificationStrings {
     channel_verification_body: "Vahvistuskoodisi on:\n{code}\n\nTai vahvista suoraan:\n{verify_link}",
 };
 
+static STRINGS_FR: NotificationStrings = NotificationStrings {
+    welcome_subject: "Bienvenue sur {hostname}",
+    welcome_body: "Bienvenue sur {hostname} !\n\nVotre identifiant est : @{handle}\n\nMerci de nous avoir rejoint.",
+    password_reset_subject: "Réinitialisation du mot de passe - {hostname}",
+    password_reset_body: "Bonjour @{handle},\n\nVotre code de réinitialisation du mot de passe est : {code}\n\nCe code expirera dans 10 minutes.\n\nSi vous n'avez pas demandé cela, veuillez ignorer ce message.",
+    email_update_subject: "Confirmer votre nouvelle adresse e-mail - {hostname}",
+    email_update_body: "Bonjour @{handle},\n\nVotre code de vérification est :\n{code}\n\nCopiez le code ci-dessus et saisissez-le ici :\n{verify_page}\n\nCe code expirera dans 10 minutes.\n\nOu si vous aimez vivre dangereusement :\n{verify_link}\n\nSi vous n'avez pas demandé cela, veuillez ignorer cet e-mail.",
+    short_token_body: "Bonjour @{handle},\n\nVotre code de vérification est :\n{code}\n\nCe code expirera dans 15 minutes.\n\nSi vous n'avez pas demandé cela, veuillez ignorer cet e-mail.",
+    account_deletion_subject: "Demande de suppression de compte - {hostname}",
+    account_deletion_body: "Bonjour @{handle},\n\nVotre code de confirmation de suppression de compte est : {code}\n\nCe code expirera dans 10 minutes.\n\nSi vous n'avez pas demandé cela, sécurisez votre compte immédiatement.",
+    plc_operation_subject: "{hostname} - Jeton d'opération PLC",
+    plc_operation_body: "Bonjour @{handle},\n\nVous avez demandé à signer une opération PLC pour votre compte.\n\nVotre jeton de vérification est : {token}\n\nCe jeton expirera dans 10 minutes.\n\nSi vous n'avez pas demandé cela, vous pouvez ignorer ce message en toute sécurité.",
+    two_factor_code_subject: "Vérification de connexion - {hostname}",
+    two_factor_code_body: "Bonjour @{handle},\n\nVotre code de vérification de connexion est : {code}\n\nCe code expirera dans 10 minutes.\n\nSi vous n'avez pas demandé cela, sécurisez votre compte immédiatement.",
+    passkey_recovery_subject: "Récupération de compte - {hostname}",
+    passkey_recovery_body: "Bonjour @{handle},\n\nVous avez demandé la récupération de votre compte à clé d'accès uniquement.\n\nCliquez sur le lien ci-dessous pour définir un mot de passe temporaire et retrouver l'accès :\n{url}\n\nCe lien expirera dans 1 heure.\n\nSi vous n'avez pas demandé cela, veuillez ignorer ce message. Votre compte reste sécurisé.",
+    signup_verification_subject: "Vérifier votre compte - {hostname}",
+    signup_verification_body: "Bienvenue ! Votre code de vérification est :\n{code}\n\nCopiez le code ci-dessus et saisissez-le ici :\n{verify_page}\n\nCe code expirera dans 30 minutes.\n\nOu si vous aimez vivre dangereusement :\n{verify_link}\n\nSi vous n'avez pas créé de compte sur {hostname}, veuillez ignorer ce message.",
+    legacy_login_subject: "Alerte de sécurité : Connexion classique détectée - {hostname}",
+    legacy_login_body: "Bonjour @{handle},\n\nUne connexion à votre compte a été détectée via une application classique (comme Bluesky) qui ne prend pas en charge la vérification TOTP.\n\nDétails :\n- Date : {timestamp}\n- Adresse IP : {ip}\n\nVotre protection TOTP a été contournée pour cette connexion. La session dispose de permissions limitées pour les opérations sensibles.\n\nSi ce n'était pas vous :\n1. Changez votre mot de passe immédiatement\n2. Vérifiez vos sessions actives\n3. Envisagez de désactiver les connexions d'applications classiques dans vos paramètres de sécurité\n\nRestez vigilant,\n{hostname}",
+    migration_verification_subject: "Vérifier votre adresse e-mail - {hostname}",
+    migration_verification_body: "Bienvenue sur {hostname} !\n\nVotre compte a été migré avec succès. Pour finaliser la configuration, veuillez vérifier votre adresse e-mail.\n\nVotre code de vérification est :\n{code}\n\nCopiez le code ci-dessus et saisissez-le ici :\n{verify_page}\n\nCe code expirera dans 48 heures.\n\nOu si vous aimez vivre dangereusement :\n{verify_link}\n\nSi vous n'avez pas migré votre compte, veuillez ignorer cet e-mail.",
+    channel_verified_subject: "Canal de notification vérifié - {hostname}",
+    channel_verified_body: "Bonjour {handle},\n\n{channel} a été vérifié comme canal de notification pour votre compte sur {hostname}.",
+    channel_verification_subject: "Vérifier votre canal - {hostname}",
+    channel_verification_body: "Votre code de vérification est :\n{code}\n\nOu vérifiez directement :\n{verify_link}",
+};
+
 pub fn format_message(template: &str, vars: &[(&str, &str)]) -> String {
     vars.iter()
         .fold(template.to_string(), |result, (key, value)| {
@@ -233,6 +262,9 @@ mod tests {
         assert_eq!(validate_locale("zh"), "zh");
         assert_eq!(validate_locale("ja"), "ja");
         assert_eq!(validate_locale("ko"), "ko");
+        assert_eq!(validate_locale("sv"), "sv");
+        assert_eq!(validate_locale("fi"), "fi");
+        assert_eq!(validate_locale("fr"), "fr");
         assert_eq!(validate_locale("invalid"), DEFAULT_LOCALE);
         assert_eq!(validate_locale(""), DEFAULT_LOCALE);
     }
@@ -252,5 +284,9 @@ mod tests {
         let zh = get_strings("zh");
         assert!(zh.welcome_subject.contains("{hostname}"));
         assert!(zh.welcome_body.contains("欢迎"));
+
+        let fr = get_strings("fr");
+        assert!(fr.welcome_subject.contains("{hostname}"));
+        assert!(fr.welcome_body.contains("Bienvenue"));
     }
 }
