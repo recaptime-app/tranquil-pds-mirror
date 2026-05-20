@@ -113,7 +113,9 @@
       "externalDidRequired": "Le did:web externe est requis",
       "externalDidFormat": "Le DID externe doit commencer par did:web:",
       "emailRequired": "L'e-mail est requis pour la vérification par e-mail",
-      "discordUsernameRequired": "Le nom d'utilisateur Discord est requis pour la vérification Discord"
+      "discordUsernameRequired": "Le nom d'utilisateur Discord est requis pour la vérification Discord",
+      "telegramRequired": "Le nom d'utilisateur Telegram est requis pour la vérification Telegram",
+      "signalRequired": "Le nom d'utilisateur Signal est requis pour la vérification Signal"
     }
   },
   "dashboard": {

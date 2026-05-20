@@ -359,6 +359,7 @@
     "passwordRemoved": "Lösenord borttaget. Ditt konto är nu endast nyckelkonto.",
     "failedToRemovePassword": "Kunde inte ta bort lösenord",
     "failedToLoadTotpStatus": "Kunde inte ladda TOTP-status",
+    "failedToRegenerateBackupCodes": "Kunde inte generera nya reservkoder",
     "totpEnabledSuccess": "Tvåfaktorsautentisering aktiverad",
     "totpDisabledSuccess": "Tvåfaktorsautentisering inaktiverad",
     "backupCodesCopied": "Reservkoder kopierade till urklipp",
@@ -490,7 +491,22 @@
     "invitesEnabled": "Användarinbjudningar aktiverade",
     "invitesDisabled": "Användarinbjudningar inaktiverade",
     "userDeleted": "Användarkonto raderat",
-    "failedToLoadConfig": "Kunde inte ladda serverkonfiguration"
+    "failedToDeleteAccount": "Kunde inte radera kontot",
+    "failedToSaveConfig": "Kunde inte spara serverkonfiguration",
+    "failedToLoadConfig": "Kunde inte ladda serverkonfiguration",
+    "signalIntegration": "Signal",
+    "signalLinked": "Länkad",
+    "signalNotLinked": "Inte länkad",
+    "signalLinkDevice": "Länka enhet",
+    "signalUnlinkDevice": "Avlänka",
+    "signalLinking": "Skanna med Signal",
+    "signalLinkSuccess": "Signal-enhet länkad",
+    "signalUnlinkSuccess": "Signal-enhet avlänkad",
+    "signalUnlinkConfirm": "Avlänka Signal-enhet? Aviseringar upphör.",
+    "signalLinkFailed": "Kunde inte länka Signal-enhet",
+    "signalLinkTimedOut": "Tidsgränsen för Signal-länkning överskreds",
+    "signalUnlinkFailed": "Kunde inte avlänka Signal-enhet",
+    "signalFailedToLoad": "Kunde inte ladda Signal-status"
   },
   "oauth": {
     "login": {
@@ -584,7 +600,8 @@
     },
     "error": {
       "title": "Auktorisering misslyckades",
-      "tryAgain": "Försök igen"
+      "tryAgain": "Försök igen",
+      "genericError": "Ett oväntat fel inträffade"
     }
   },
   "sso_register": {
@@ -818,6 +835,7 @@
     "controlledAccountsLocalOnly": "Endast konton på denna PDS visas. En annan PDS kan ha beviljat dig kontrollåtkomst separat",
     "controllerAdded": "Kontrollant tillagd",
     "controllerDid": "Kontrollant-DID",
+    "controllerIdentifier": "Kontrollantens användarnamn eller DID",
     "controllerRemoved": "Kontrollant borttagen",
     "controllersDesc": "Konton som kan agera för dig",
     "createAccount": "Skapa konto",

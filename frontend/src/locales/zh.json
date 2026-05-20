@@ -359,6 +359,7 @@
     "passwordRemoved": "密码已移除。您的账户现在仅支持通行密钥。",
     "failedToRemovePassword": "移除密码失败",
     "failedToLoadTotpStatus": "加载 TOTP 状态失败",
+    "failedToRegenerateBackupCodes": "重新生成备用码失败",
     "totpEnabledSuccess": "双重身份验证已成功启用",
     "totpDisabledSuccess": "双重身份验证已禁用",
     "backupCodesCopied": "备用码已复制到剪贴板",
@@ -490,7 +491,22 @@
     "invitesEnabled": "用户邀请已启用",
     "invitesDisabled": "用户邀请已禁用",
     "userDeleted": "用户账户已删除",
-    "failedToLoadConfig": "加载服务器配置失败"
+    "failedToDeleteAccount": "删除账户失败",
+    "failedToSaveConfig": "保存服务器配置失败",
+    "failedToLoadConfig": "加载服务器配置失败",
+    "signalIntegration": "Signal",
+    "signalLinked": "已关联",
+    "signalNotLinked": "未关联",
+    "signalLinkDevice": "关联设备",
+    "signalUnlinkDevice": "取消关联",
+    "signalLinking": "使用 Signal 扫描",
+    "signalLinkSuccess": "Signal 设备已关联",
+    "signalUnlinkSuccess": "Signal 设备已取消关联",
+    "signalUnlinkConfirm": "取消关联 Signal 设备?通知将停止。",
+    "signalLinkFailed": "关联 Signal 设备失败",
+    "signalLinkTimedOut": "Signal 关联超时",
+    "signalUnlinkFailed": "取消关联 Signal 设备失败",
+    "signalFailedToLoad": "加载 Signal 状态失败"
   },
   "oauth": {
     "login": {
@@ -584,7 +600,8 @@
     },
     "error": {
       "title": "授权失败",
-      "tryAgain": "重试"
+      "tryAgain": "重试",
+      "genericError": "发生意外错误"
     }
   },
   "sso_register": {
@@ -819,6 +836,7 @@
     "controlledAccountsLocalOnly": "仅显示此PDS上的账户。其他PDS可能已单独授予您控制者访问权限",
     "controllerAdded": "控制者已添加",
     "controllerDid": "控制者 DID",
+    "controllerIdentifier": "控制者用户名或 DID",
     "controllerRemoved": "控制者已移除",
     "controllersDesc": "可以代理操作您账户的账户",
     "createAccount": "创建账户",

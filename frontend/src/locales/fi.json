@@ -359,6 +359,7 @@
     "passwordRemoved": "Salasana poistettu. Tilisi on nyt vain pääsyavaintili.",
     "failedToRemovePassword": "Salasanan poistaminen epäonnistui",
     "failedToLoadTotpStatus": "TOTP-tilan lataaminen epäonnistui",
+    "failedToRegenerateBackupCodes": "Varakoodien uudelleenluonti epäonnistui",
     "totpEnabledSuccess": "Kaksivaiheinen tunnistautuminen käytössä",
     "totpDisabledSuccess": "Kaksivaiheinen tunnistautuminen poistettu käytöstä",
     "backupCodesCopied": "Varakoodit kopioitu leikepöydälle",
@@ -490,7 +491,22 @@
     "invitesEnabled": "Käyttäjäkutsut käytössä",
     "invitesDisabled": "Käyttäjäkutsut pois käytöstä",
     "userDeleted": "Käyttäjätili poistettu",
-    "failedToLoadConfig": "Palvelinasetusten lataus epäonnistui"
+    "failedToDeleteAccount": "Tilin poisto epäonnistui",
+    "failedToSaveConfig": "Palvelinasetusten tallennus epäonnistui",
+    "failedToLoadConfig": "Palvelinasetusten lataus epäonnistui",
+    "signalIntegration": "Signal",
+    "signalLinked": "Linkitetty",
+    "signalNotLinked": "Ei linkitetty",
+    "signalLinkDevice": "Linkitä laite",
+    "signalUnlinkDevice": "Poista linkitys",
+    "signalLinking": "Skannaa Signalilla",
+    "signalLinkSuccess": "Signal-laite linkitetty",
+    "signalUnlinkSuccess": "Signal-laitteen linkitys poistettu",
+    "signalUnlinkConfirm": "Poistetaanko Signal-laitteen linkitys? Ilmoitukset lakkaavat.",
+    "signalLinkFailed": "Signal-laitteen linkitys epäonnistui",
+    "signalLinkTimedOut": "Signal-linkityksen aikakatkaisu",
+    "signalUnlinkFailed": "Signal-laitteen linkityksen poisto epäonnistui",
+    "signalFailedToLoad": "Signalin tilan lataus epäonnistui"
   },
   "oauth": {
     "login": {
@@ -584,7 +600,8 @@
     },
     "error": {
       "title": "Valtuutus epäonnistui",
-      "tryAgain": "Yritä uudelleen"
+      "tryAgain": "Yritä uudelleen",
+      "genericError": "Odottamaton virhe"
     }
   },
   "sso_register": {
@@ -790,6 +807,7 @@
     "cannotAddControllers": "Et voi lisätä hallinnoijia, koska tämä tili hallinnoi muita tilejä. Tili voi joko olla hallinnoija tai hallinnoidaan, mutta ei molempia.",
     "addController": "Lisää hallinnoija",
     "controllerDid": "Hallinnoijan DID",
+    "controllerIdentifier": "Hallinnoijan käyttäjänimi tai DID",
     "accessLevel": "Käyttöoikeustaso",
     "adding": "Lisätään...",
     "addControllerButton": "+ Lisää hallinnoija",
@@ -848,7 +866,7 @@
     "title": "Delegoitu tili",
     "isDelegated": "{handle} on delegoitu tili.",
     "enterControllerHandle": "Kirjaudu hallinnoijatililläsi päästäksesi tähän tiliin.",
-    "controllerHandle": "Hallinnoijan käyttäjätunnus",
+    "controllerHandle": "Hallinnoijan käyttäjänimi",
     "handlePlaceholder": "tunnus.esimerkki.fi",
     "checking": "Tarkistetaan...",
     "controllerNotFound": "Tiliä ei löytynyt tai sinulla ei ole pääsyä tähän delegoituun tiliin",

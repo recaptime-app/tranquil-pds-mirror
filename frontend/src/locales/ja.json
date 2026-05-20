@@ -359,6 +359,7 @@
     "passwordRemoved": "パスワードが削除されました。アカウントはパスキーのみになりました。",
     "failedToRemovePassword": "パスワードの削除に失敗しました",
     "failedToLoadTotpStatus": "TOTP ステータスの読み込みに失敗しました",
+    "failedToRegenerateBackupCodes": "バックアップコードの再生成に失敗しました",
     "totpEnabledSuccess": "二要素認証が正常に有効化されました",
     "totpDisabledSuccess": "二要素認証が無効化されました",
     "backupCodesCopied": "バックアップコードをクリップボードにコピーしました",
@@ -490,7 +491,22 @@
     "invitesEnabled": "ユーザー招待を有効にしました",
     "invitesDisabled": "ユーザー招待を無効にしました",
     "userDeleted": "ユーザーアカウントを削除しました",
-    "failedToLoadConfig": "サーバー設定の読み込みに失敗しました"
+    "failedToDeleteAccount": "アカウントの削除に失敗しました",
+    "failedToSaveConfig": "サーバー設定の保存に失敗しました",
+    "failedToLoadConfig": "サーバー設定の読み込みに失敗しました",
+    "signalIntegration": "Signal",
+    "signalLinked": "連携済み",
+    "signalNotLinked": "未連携",
+    "signalLinkDevice": "デバイスを連携",
+    "signalUnlinkDevice": "連携解除",
+    "signalLinking": "Signalでスキャン",
+    "signalLinkSuccess": "Signalデバイスを連携しました",
+    "signalUnlinkSuccess": "Signalデバイスの連携を解除しました",
+    "signalUnlinkConfirm": "Signalデバイスの連携を解除しますか?通知が停止します。",
+    "signalLinkFailed": "Signalデバイスの連携に失敗しました",
+    "signalLinkTimedOut": "Signal連携がタイムアウトしました",
+    "signalUnlinkFailed": "Signalデバイスの連携解除に失敗しました",
+    "signalFailedToLoad": "Signalステータスの読み込みに失敗しました"
   },
   "oauth": {
     "login": {
@@ -584,7 +600,8 @@
     },
     "error": {
       "title": "承認失敗",
-      "tryAgain": "再試行"
+      "tryAgain": "再試行",
+      "genericError": "予期しないエラーが発生しました"
     }
   },
   "sso_register": {
@@ -818,6 +835,7 @@
     "controlledAccountsLocalOnly": "このPDS上のアカウントのみ表示されます。別のPDSがコントローラーアクセスを個別に付与している場合があります",
     "controllerAdded": "コントローラーを追加しました",
     "controllerDid": "コントローラーDID",
+    "controllerIdentifier": "コントローラーのハンドルまたはDID",
     "controllerRemoved": "コントローラーを削除しました",
     "controllersDesc": "あなたの代わりに操作できるアカウント",
     "createAccount": "アカウントを作成",

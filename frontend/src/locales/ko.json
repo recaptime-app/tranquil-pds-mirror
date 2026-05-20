@@ -359,6 +359,7 @@
     "passwordRemoved": "비밀번호가 제거되었습니다. 이제 계정은 패스키 전용입니다.",
     "failedToRemovePassword": "비밀번호 제거에 실패했습니다",
     "failedToLoadTotpStatus": "TOTP 상태 로딩에 실패했습니다",
+    "failedToRegenerateBackupCodes": "백업 코드 재생성에 실패했습니다",
     "totpEnabledSuccess": "2단계 인증이 활성화되었습니다",
     "totpDisabledSuccess": "2단계 인증이 비활성화되었습니다",
     "backupCodesCopied": "백업 코드가 클립보드에 복사되었습니다",
@@ -490,7 +491,22 @@
     "invitesEnabled": "사용자 초대가 활성화되었습니다",
     "invitesDisabled": "사용자 초대가 비활성화되었습니다",
     "userDeleted": "사용자 계정이 삭제되었습니다",
-    "failedToLoadConfig": "서버 설정 로딩 실패"
+    "failedToDeleteAccount": "계정 삭제에 실패했습니다",
+    "failedToSaveConfig": "서버 설정 저장에 실패했습니다",
+    "failedToLoadConfig": "서버 설정 로딩 실패",
+    "signalIntegration": "Signal",
+    "signalLinked": "연결됨",
+    "signalNotLinked": "연결되지 않음",
+    "signalLinkDevice": "기기 연결",
+    "signalUnlinkDevice": "연결 해제",
+    "signalLinking": "Signal로 스캔",
+    "signalLinkSuccess": "Signal 기기가 연결되었습니다",
+    "signalUnlinkSuccess": "Signal 기기 연결이 해제되었습니다",
+    "signalUnlinkConfirm": "Signal 기기 연결을 해제하시겠습니까? 알림이 중지됩니다.",
+    "signalLinkFailed": "Signal 기기 연결에 실패했습니다",
+    "signalLinkTimedOut": "Signal 연결 시간이 초과되었습니다",
+    "signalUnlinkFailed": "Signal 기기 연결 해제에 실패했습니다",
+    "signalFailedToLoad": "Signal 상태 로딩에 실패했습니다"
   },
   "oauth": {
     "login": {
@@ -584,7 +600,8 @@
     },
     "error": {
       "title": "승인 실패",
-      "tryAgain": "다시 시도"
+      "tryAgain": "다시 시도",
+      "genericError": "예기치 않은 오류가 발생했습니다"
     }
   },
   "sso_register": {
@@ -818,6 +835,7 @@
     "controlledAccountsLocalOnly": "이 PDS의 계정만 표시됩니다. 다른 PDS에서 별도로 컨트롤러 액세스를 부여했을 수 있습니다",
     "controllerAdded": "컨트롤러가 추가되었습니다",
     "controllerDid": "컨트롤러 DID",
+    "controllerIdentifier": "컨트롤러 핸들 또는 DID",
     "controllerRemoved": "컨트롤러가 제거되었습니다",
     "controllersDesc": "귀하를 대신하여 작업할 수 있는 계정",
     "createAccount": "계정 생성",
