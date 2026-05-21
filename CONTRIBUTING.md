@@ -1,5 +1,21 @@
 # Contributing to Tranquil PDS
 
+## When PRing
+
+In order of importance:
+
+- **You must run your change! Every contribution that says "here's xyz. untested." does not help the project.**
+- Relevant tests to your PR must pass. The whole suite doesn't have to be proven to have run, because there are a *ton* of tests and they're quite heavy, but hopefully there are existing tests for whatever you're PRing, and if there aren't, please add those too.
+- Run cargo fmt :P
+
+> 🦪 Lewis
+>
+> Good CI fixes some of these. We should really get around to that.
+
+Things that would also be nice but aren't like, a pain in our side:
+
+- Big changes should be stacked PRs that are broken up into digestible pieces. Those stacked PRs should hopefully be able to be merged individually if necessary.
+
 ## Local Development
 
 ### Prerequisites
