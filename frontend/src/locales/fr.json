@@ -162,7 +162,7 @@
     "serverUrl": "URL du serveur",
     "availableDomains": "Domaines disponibles",
     "did": "DID",
-    "handle": "Nom d'utilisateur",
+    "handle": "Identifiant",
     "accountStatus": "Statut du compte",
     "adminStatus": "Administrateur",
     "userAgent": "Agent utilisateur",
