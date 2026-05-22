@@ -2,13 +2,14 @@
   lib,
   stdenvNoCC,
   nodejs,
-  pnpm,
+  pnpm_11,
   pnpmConfigHook,
   fetchPnpmDeps,
   nix-update-script,
 }:
 let
   toml = (lib.importTOML ./Cargo.toml).workspace.package;
+  pnpm = pnpm_11;
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "tranquil-frontend";
@@ -18,6 +19,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
+    inherit pnpm;
     fetcherVersion = 3;
     hash = "sha256-qbmIAvE/3u/NB5x9bERCGQqwiDLkzjff3QchgR+ZDFs=";
   };
