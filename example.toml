@@ -62,6 +62,14 @@
 # Default value: false
 #disable_rate_limiting = false
 
+# Skip the verified-comms-channel gate for login and record writes.
+# Please keep this off unless you're an invite-only PDS!
+#
+# Can also be specified via environment variable `DISABLE_ACCOUNT_VERIFICATION_GATE`.
+#
+# Default value: false
+#disable_account_verification_gate = false
+
 # List of additional banned words for handle validation.
 #
 # Can also be specified via environment variable `PDS_BANNED_WORDS`.

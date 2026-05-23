@@ -7,6 +7,8 @@ run-dev:
     docker compose --profile dev up
 run-release:
     cargo run -p tranquil-server --release
+gen-config:
+    cargo run -p tranquil-server -- config-template > example.toml
 build:
     cargo build
 build-release:

@@ -21,6 +21,13 @@ pub async fn require_verified_or_delegated<'a>(
     state: &AppState,
     user: &'a AuthenticatedUser,
 ) -> Result<AccountVerified<'a>, ApiError> {
+    if tranquil_config::get()
+        .server
+        .disable_account_verification_gate
+    {
+        return Ok(AccountVerified { user });
+    }
+
     let is_verified = state
         .repos
         .user

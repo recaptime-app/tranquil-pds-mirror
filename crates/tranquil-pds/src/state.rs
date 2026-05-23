@@ -610,6 +610,17 @@ fn wire_tranquil_store(
         }
     }
 
+    if std::env::var("TRANQUIL_PURGE_ORPHAN_REPOS").is_ok_and(|v| v == "1") {
+        match metastore
+            .repo_ops()
+            .purge_orphan_repos(metastore.database())
+        {
+            Ok(0) => tracing::info!("orphan repo purge: no orphans found"),
+            Ok(n) => tracing::info!(purged = n, "orphan repo purge: removed orphan repo_meta"),
+            Err(e) => tracing::error!(error = %e, "orphan repo purge failed"),
+        }
+    }
+
     let notifier = bridge.notifier();
     let signal_db = metastore.database().clone();
     let signal_ks = metastore.signal_keyspace();

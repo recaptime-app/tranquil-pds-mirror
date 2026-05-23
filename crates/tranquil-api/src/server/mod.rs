@@ -51,6 +51,7 @@ pub use session::{
     auto_resend_verification, confirm_signup, create_session, delete_session,
     get_legacy_login_preference, get_session, list_sessions, refresh_session, resend_verification,
     revoke_all_sessions, revoke_session, update_legacy_login_preference, update_locale,
+    verification_blocks_login,
 };
 pub use signing_key::reserve_signing_key;
 pub use totp::{

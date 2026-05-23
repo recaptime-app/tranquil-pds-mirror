@@ -5026,6 +5026,20 @@ fn dispatch<S: StorageIO + 'static>(state: &HandlerState<S>, request: MetastoreR
     }
 }
 
+fn purge_repo_side_data<S: StorageIO + 'static>(
+    state: &HandlerState<S>,
+    user_id: Uuid,
+    did: &Did,
+) -> Result<(), MetastoreError> {
+    let _ = state.metastore.blob_ops().delete_blobs_by_user(user_id)?;
+    let mut batch = state.metastore.database().batch();
+    state
+        .metastore
+        .backlink_ops()
+        .remove_backlinks_by_repo(&mut batch, UserHash::from_did(did.as_str()))?;
+    batch.commit().map_err(MetastoreError::Fjall)
+}
+
 fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserRequest) {
     let user = state.metastore.user_ops();
     match req {
@@ -5698,10 +5712,10 @@ fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserReque
             let _ = tx.send(user.get_user_key_by_did(&did).map_err(metastore_to_db));
         }
         UserRequest::DeleteAccountComplete { user_id, did, tx } => {
-            let _ = tx.send(
-                user.delete_account_complete(user_id, &did)
-                    .map_err(metastore_to_db),
-            );
+            let result = purge_repo_side_data(state, user_id, &did)
+                .and_then(|()| user.delete_account_complete(user_id, &did))
+                .map_err(metastore_to_db);
+            let _ = tx.send(result);
         }
         UserRequest::SetUserTakedown {
             did,
@@ -5714,10 +5728,10 @@ fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserReque
             );
         }
         UserRequest::AdminDeleteAccountComplete { user_id, did, tx } => {
-            let _ = tx.send(
-                user.admin_delete_account_complete(user_id, &did)
-                    .map_err(metastore_to_db),
-            );
+            let result = purge_repo_side_data(state, user_id, &did)
+                .and_then(|()| user.admin_delete_account_complete(user_id, &did))
+                .map_err(metastore_to_db);
+            let _ = tx.send(result);
         }
         UserRequest::GetUserForDidDoc { did, tx } => {
             let _ = tx.send(user.get_user_for_did_doc(&did).map_err(metastore_to_db));

@@ -8,7 +8,7 @@ use bcrypt::verify;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{error, info, warn};
-use tranquil_db_traits::{SessionId, TokenFamilyId};
+use tranquil_db_traits::{ChannelVerificationStatus, SessionId, TokenFamilyId};
 use tranquil_pds::api::error::{ApiError, DbResultExt};
 use tranquil_pds::api::{EmptyResponse, PreferredLocaleOutput, SuccessResponse};
 use tranquil_pds::auth::{
@@ -19,6 +19,13 @@ use tranquil_pds::rate_limit::{LoginLimit, RateLimited, RefreshSessionLimit};
 use tranquil_pds::state::AppState;
 use tranquil_pds::types::{AccountState, Did, Handle, PlainPassword};
 use tranquil_types::TokenId;
+
+pub fn verification_blocks_login(channel_verification: &ChannelVerificationStatus) -> bool {
+    !tranquil_config::get()
+        .server
+        .disable_account_verification_gate
+        && !channel_verification.has_any_verified()
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,14 +136,13 @@ pub async fn create_session(
         warn!("Login attempt for takendown account: {}", row.did);
         return Err(ApiError::AccountTakedown);
     }
-    let is_verified = row.channel_verification.has_any_verified();
     let is_delegated = state
         .repos
         .delegation
         .is_delegated_account(&row.did)
         .await
         .unwrap_or(false);
-    if !is_verified && !is_delegated {
+    if verification_blocks_login(&row.channel_verification) && !is_delegated {
         warn!("Login attempt for unverified account: {}", row.did);
         let resend_info = auto_resend_verification(&state, &row.did).await;
         let handle = resend_info

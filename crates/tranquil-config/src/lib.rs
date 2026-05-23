@@ -456,6 +456,11 @@ pub struct ServerConfig {
     #[config(env = "DISABLE_RATE_LIMITING", default = false)]
     pub disable_rate_limiting: bool,
 
+    /// Skip the verified-comms-channel gate for login and record writes.
+    /// Please keep this off unless you're an invite-only PDS!
+    #[config(env = "DISABLE_ACCOUNT_VERIFICATION_GATE", default = false)]
+    pub disable_account_verification_gate: bool,
+
     /// List of additional banned words for handle validation.
     #[config(env = "PDS_BANNED_WORDS", parse_env = split_comma_list)]
     pub banned_words: Option<Vec<String>>,

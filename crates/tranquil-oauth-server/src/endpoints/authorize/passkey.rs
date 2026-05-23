@@ -289,9 +289,7 @@ async fn passkey_start_named(
             .into_response();
     }
 
-    let is_verified = user.channel_verification.has_any_verified();
-
-    if !is_verified {
+    if tranquil_api::server::verification_blocks_login(&user.channel_verification) {
         let resend_info = tranquil_api::server::auto_resend_verification(&state, &user.did).await;
         return (
             StatusCode::FORBIDDEN,

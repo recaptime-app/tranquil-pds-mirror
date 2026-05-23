@@ -44,6 +44,7 @@ pub struct UserRow {
     pub deactivated_at: Option<DateTime<Utc>>,
     pub takedown_ref: Option<String>,
     pub is_admin: bool,
+    pub inbound_migration: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -995,6 +996,7 @@ pub struct CreatePasswordAccountInput {
     pub telegram_username: Option<String>,
     pub signal_username: Option<String>,
     pub deactivated_at: Option<DateTime<Utc>>,
+    pub inbound_migration: bool,
     pub encrypted_key_bytes: Vec<u8>,
     pub encryption_version: i32,
     pub reserved_key_id: Option<Uuid>,

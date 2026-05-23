@@ -76,27 +76,28 @@ fn index_backed_by_disk_invariant_catches_phantom_after_external_delete() {
 
 #[tokio::test]
 async fn external_corruption_scenario_survives_many_seeds() {
-    let failures: Vec<String> = futures::future::join_all((0..5).map(Seed).map(|seed| async move {
-        let cfg = config_for(Scenario::ExternalCorruption, seed);
-        let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
-        (seed, report)
-    }))
-    .await
-    .into_iter()
-    .filter(|(_, r)| !r.is_clean())
-    .map(|(seed, r)| {
-        format!(
-            "seed {}: {} violations\n  {}",
-            seed.0,
-            r.violations.len(),
-            r.violations
-                .iter()
-                .map(|v| format!("{}: {}", v.invariant, v.detail))
-                .collect::<Vec<_>>()
-                .join("\n  ")
-        )
-    })
-    .collect();
+    let failures: Vec<String> =
+        futures::future::join_all((0..5).map(Seed).map(|seed| async move {
+            let cfg = config_for(Scenario::ExternalCorruption, seed);
+            let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
+            (seed, report)
+        }))
+        .await
+        .into_iter()
+        .filter(|(_, r)| !r.is_clean())
+        .map(|(seed, r)| {
+            format!(
+                "seed {}: {} violations\n  {}",
+                seed.0,
+                r.violations.len(),
+                r.violations
+                    .iter()
+                    .map(|v| format!("{}: {}", v.invariant, v.detail))
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            )
+        })
+        .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
 }
 

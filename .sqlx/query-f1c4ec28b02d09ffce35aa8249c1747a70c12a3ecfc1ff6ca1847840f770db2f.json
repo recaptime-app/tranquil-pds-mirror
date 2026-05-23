@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, did, handle, email, created_at, deactivated_at, takedown_ref, is_admin\n               FROM users WHERE handle = $1",
+  "query": "SELECT id, did, handle, email, created_at, deactivated_at, takedown_ref, is_admin, inbound_migration\n               FROM users WHERE did = $1",
   "describe": {
     "columns": [
       {
@@ -42,6 +42,11 @@
         "ordinal": 7,
         "name": "is_admin",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "inbound_migration",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -57,8 +62,9 @@
       false,
       true,
       true,
+      false,
       false
     ]
   },
-  "hash": "584bceda60d8b6a02e7dc44d833e3fba13151f36ba9f75c64e33d6cb534cc939"
+  "hash": "f1c4ec28b02d09ffce35aa8249c1747a70c12a3ecfc1ff6ca1847840f770db2f"
 }

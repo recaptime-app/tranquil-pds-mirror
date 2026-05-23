@@ -402,13 +402,15 @@ async fn handle_sso_login(
         }
     };
 
-    let is_verified = match state
+    let login_blocked = match state
         .repos
         .user
         .get_session_info_by_did(&identity.did)
         .await
     {
-        Ok(Some(info)) => info.channel_verification.has_any_verified(),
+        Ok(Some(info)) => {
+            tranquil_api::server::verification_blocks_login(&info.channel_verification)
+        }
         Ok(None) => {
             tracing::error!("User not found for SSO login: {}", identity.did);
             return redirect_to_error("Account not found");
@@ -419,7 +421,7 @@ async fn handle_sso_login(
         }
     };
 
-    if !is_verified {
+    if login_blocked {
         tracing::warn!(
             did = %identity.did,
             provider = %provider.as_str(),

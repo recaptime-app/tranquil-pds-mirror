@@ -150,6 +150,7 @@ async fn seed_user(repos: &PostgresRepositories, did: &Did, handle: &Handle) -> 
         telegram_username: None,
         signal_username: None,
         deactivated_at: None,
+        inbound_migration: false,
         encrypted_key_bytes: vec![0u8; 32],
         encryption_version: 0,
         reserved_key_id: None,
@@ -1463,6 +1464,37 @@ async fn parity_delete_all_records() {
     let store_colls = f.store.repo.list_collections(store_uid).await.unwrap();
     assert_eq!(pg_colls.len(), 0);
     assert_eq!(store_colls.len(), 0);
+}
+
+#[tokio::test]
+async fn parity_account_deletion_clears_records_on_reregister() {
+    let f = ParityFixture::new().await;
+    let did = test_did("cuttle");
+    let handle = test_handle("cuttle");
+    let collection = test_nsid("post");
+
+    let (pg_uid, store_uid) = seed_repos(&f, &did, &handle).await;
+
+    let records: Vec<(Rkey, CidLink)> = (0u8..3)
+        .map(|i| (test_rkey(&format!("3l{:02}aaaaaaaaa", i)), test_cid(i + 1)))
+        .collect();
+    seed_records(&f.pg, pg_uid, &collection, &records).await;
+    seed_records(&f.store, store_uid, &collection, &records).await;
+
+    f.pg.user
+        .delete_account_complete(pg_uid, &did)
+        .await
+        .unwrap();
+    f.store
+        .user
+        .delete_account_complete(store_uid, &did)
+        .await
+        .unwrap();
+
+    let (pg_uid2, store_uid2) = seed_repos(&f, &did, &handle).await;
+
+    assert_eq!(f.pg.repo.count_records(pg_uid2).await.unwrap(), 0);
+    assert_eq!(f.store.repo.count_records(store_uid2).await.unwrap(), 0);
 }
 
 #[tokio::test]

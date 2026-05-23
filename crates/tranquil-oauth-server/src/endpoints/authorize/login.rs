@@ -488,8 +488,7 @@ pub async fn authorize_post(
     if !password_valid {
         return show_login_error("Invalid identifier or password.", json_response);
     }
-    let is_verified = user.channel_verification.has_any_verified();
-    if !is_verified {
+    if tranquil_api::server::verification_blocks_login(&user.channel_verification) {
         let resend_info = tranquil_api::server::auto_resend_verification(&state, &user.did).await;
         let handle = resend_info
             .as_ref()
@@ -854,8 +853,7 @@ pub async fn authorize_select(
             );
         }
     };
-    let is_verified = user.channel_verification.has_any_verified();
-    if !is_verified {
+    if tranquil_api::server::verification_blocks_login(&user.channel_verification) {
         let resend_info = tranquil_api::server::auto_resend_verification(&state, &did).await;
         return (
             StatusCode::FORBIDDEN,

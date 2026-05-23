@@ -510,6 +510,7 @@ pub async fn create_account(
         telegram_username: comms.telegram,
         signal_username: comms.signal,
         deactivated_at,
+        inbound_migration: is_migration || is_did_web_byod,
         encrypted_key_bytes: repo.encrypted_key_bytes,
         encryption_version: tranquil_pds::config::ENCRYPTION_VERSION,
         reserved_key_id,

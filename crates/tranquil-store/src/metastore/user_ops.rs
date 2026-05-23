@@ -8,7 +8,7 @@ use super::MetastoreError;
 use super::infra_schema::{channel_to_u8, u8_to_channel};
 use super::keys::UserHash;
 use super::repo_meta::{RepoMetaValue, RepoStatus, handle_key, repo_meta_key};
-use super::repo_ops::cid_link_to_bytes;
+use super::repo_ops::{cid_link_to_bytes, stage_full_repo_data_removal};
 use super::scan::{count_prefix, delete_all_by_prefix, point_lookup};
 use super::sessions::{SessionIndexValue, session_by_access_key};
 use super::user_hash::UserHashMap;
@@ -182,6 +182,7 @@ impl UserOps {
                 .and_then(DateTime::from_timestamp_millis),
             takedown_ref: val.takedown_ref.clone(),
             is_admin: val.is_admin,
+            inbound_migration: val.inbound_migration,
         })
     }
 
@@ -2244,6 +2245,7 @@ impl UserOps {
         self.mutate_user(user_hash, |u| {
             u.deactivated_at_ms = None;
             u.delete_after_ms = None;
+            u.inbound_migration = false;
         })
     }
 
@@ -2421,8 +2423,25 @@ impl UserOps {
 
         let mut batch = self.db.batch();
         self.delete_user_data(&mut batch, user_hash, &user)?;
+        self.stage_repo_data_removal(&mut batch, user_hash)?;
         self.user_hashes.stage_remove(&mut batch, &user_id);
         batch.commit().map_err(MetastoreError::Fjall)
+    }
+
+    fn stage_repo_data_removal(
+        &self,
+        batch: &mut fjall::OwnedWriteBatch,
+        user_hash: UserHash,
+    ) -> Result<(), MetastoreError> {
+        let handle = point_lookup(
+            &self.repo_data,
+            repo_meta_key(user_hash).as_slice(),
+            RepoMetaValue::deserialize,
+            "invalid repo_meta value",
+        )?
+        .map(|m| m.handle)
+        .unwrap_or_default();
+        stage_full_repo_data_removal(batch, &self.repo_data, user_hash, &handle)
     }
 
     pub fn set_user_takedown(
@@ -2657,6 +2676,7 @@ impl UserOps {
         account_type: AccountType,
         password_required: bool,
         is_admin: bool,
+        inbound_migration: bool,
     ) -> UserValue {
         let now_ms = Utc::now().timestamp_millis();
         UserValue {
@@ -2692,6 +2712,7 @@ impl UserOps {
             signal_username: signal_username.map(str::to_owned),
             signal_verified: false,
             delete_after_ms: None,
+            inbound_migration,
         }
     }
 
@@ -2841,6 +2862,7 @@ impl UserOps {
             AccountType::Personal,
             true,
             is_admin,
+            input.inbound_migration,
         );
 
         self.write_new_account(&user_value, &input.commit_cid, &input.repo_rev)
@@ -2865,6 +2887,7 @@ impl UserOps {
             &input.encrypted_key_bytes,
             input.encryption_version,
             AccountType::Delegated,
+            false,
             false,
             false,
         );
@@ -2898,6 +2921,7 @@ impl UserOps {
             AccountType::Personal,
             false,
             is_admin,
+            false,
         );
 
         let result = self.write_new_account(&user_value, &input.commit_cid, &input.repo_rev)?;
@@ -2942,6 +2966,7 @@ impl UserOps {
             AccountType::Personal,
             false,
             is_admin,
+            false,
         );
 
         self.write_new_account(&user_value, &input.commit_cid, &input.repo_rev)

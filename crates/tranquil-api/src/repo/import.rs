@@ -106,7 +106,7 @@ pub async fn import_repo(
                 .map(|c| c.import.skip_verification)
                 .unwrap_or(false)
         });
-    let is_migration = user.deactivated_at.is_some();
+    let is_migration = user.inbound_migration && user.deactivated_at.is_some();
     if skip_verification {
         warn!("Skipping all CAR verification for import (SKIP_IMPORT_VERIFICATION=true)");
     } else if is_migration {

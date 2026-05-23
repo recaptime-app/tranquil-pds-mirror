@@ -6,8 +6,12 @@ use uuid::Uuid;
 use super::MetastoreError;
 use super::encoding::KeyReader;
 use super::keys::{KeyTag, UserHash};
-use super::repo_meta::{RepoMetaValue, RepoStatus, handle_key, repo_meta_key, repo_meta_prefix};
-use super::scan::{count_prefix, point_lookup};
+use super::records::record_user_prefix;
+use super::repo_meta::{
+    RepoMetaValue, RepoStatus, handle_key, repo_meta_key, repo_meta_prefix, stage_repo_meta_removal,
+};
+use super::scan::{count_prefix, delete_all_by_prefix, point_lookup};
+use super::user_blocks::user_block_user_prefix;
 use super::user_hash::UserHashMap;
 
 use tranquil_types::{CidLink, Did, Handle};
@@ -241,13 +245,7 @@ impl RepoOps {
         let meta = self.get_meta_value(key.as_slice())?;
 
         let mut batch = db.batch();
-        batch.remove(&self.repo_data, key.as_slice());
-
-        match meta.handle.is_empty() {
-            true => {}
-            false => batch.remove(&self.repo_data, handle_key(&meta.handle).as_slice()),
-        }
-
+        stage_repo_meta_removal(&mut batch, &self.repo_data, user_hash, &meta.handle);
         self.user_hashes.stage_remove(&mut batch, &user_id);
 
         match batch.commit() {
@@ -255,6 +253,48 @@ impl RepoOps {
             Err(e) => {
                 self.user_hashes.rollback_remove(user_id, user_hash);
                 Err(MetastoreError::Fjall(e))
+            }
+        }
+    }
+
+    pub fn purge_orphan_repos(&self, db: &fjall::Database) -> Result<usize, MetastoreError> {
+        let prefix = repo_meta_prefix();
+        let orphans: Vec<(UserHash, String)> = self
+            .repo_data
+            .prefix(prefix.as_slice())
+            .map(|guard| -> Result<Option<(UserHash, String)>, MetastoreError> {
+                let (k, v) = guard.into_inner().map_err(MetastoreError::Fjall)?;
+                let user_hash = parse_repo_meta_key_hash(&k)
+                    .ok_or(MetastoreError::CorruptData("invalid repo_meta key"))?;
+                match self.user_hashes.get_uuid(&user_hash) {
+                    Some(_) => Ok(None),
+                    None => {
+                        let handle = match RepoMetaValue::deserialize(&v) {
+                            Some(meta) => meta.handle,
+                            None => {
+                                tracing::warn!(
+                                    user_hash = user_hash.raw(),
+                                    "could not deserialize orphan repo_meta to recover handle for cleanup"
+                                );
+                                String::new()
+                            }
+                        };
+                        Ok(Some((user_hash, handle)))
+                    }
+                }
+            })
+            .filter_map(Result::transpose)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        match orphans.is_empty() {
+            true => Ok(0),
+            false => {
+                let mut batch = db.batch();
+                orphans.iter().try_for_each(|(user_hash, handle)| {
+                    stage_full_repo_data_removal(&mut batch, &self.repo_data, *user_hash, handle)
+                })?;
+                batch.commit().map_err(MetastoreError::Fjall)?;
+                Ok(orphans.len())
             }
         }
     }
@@ -569,9 +609,26 @@ fn parse_repo_meta_key_hash(key_bytes: &[u8]) -> Option<UserHash> {
     Some(UserHash::from_raw(hash))
 }
 
+pub(super) fn stage_full_repo_data_removal(
+    batch: &mut fjall::OwnedWriteBatch,
+    repo_data: &Keyspace,
+    user_hash: UserHash,
+    handle: &str,
+) -> Result<(), MetastoreError> {
+    stage_repo_meta_removal(batch, repo_data, user_hash, handle);
+    delete_all_by_prefix(repo_data, batch, record_user_prefix(user_hash).as_slice())?;
+    delete_all_by_prefix(
+        repo_data,
+        batch,
+        user_block_user_prefix(user_hash).as_slice(),
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metastore::partitions::Partition;
     use crate::metastore::{Metastore, MetastoreConfig};
 
     fn test_config() -> MetastoreConfig {
@@ -723,6 +780,121 @@ mod tests {
         assert_eq!(repo.user_id, uid_b);
         assert_eq!(repo.repo_rev.as_deref(), Some("r2"));
         assert!(ops.get_repo(uid_a).unwrap().is_none());
+    }
+
+    #[test]
+    fn purge_orphan_repos_removes_entries_with_missing_reverse_mapping() {
+        let (_dir, ms) = open_fresh();
+        let ops = ms.repo_ops();
+        let orphan_id = uuid::Uuid::new_v4();
+        let orphan_did = test_did("limpet");
+        let orphan_handle = test_handle("limpet");
+        let live_id = uuid::Uuid::new_v4();
+        let live_did = test_did("whelk");
+        let live_handle = test_handle("whelk");
+        let cid = test_cid_link(9);
+
+        ops.create_repo(
+            ms.database(),
+            orphan_id,
+            &orphan_did,
+            &orphan_handle,
+            &cid,
+            "rev1",
+        )
+        .unwrap();
+        ops.create_repo(
+            ms.database(),
+            live_id,
+            &live_did,
+            &live_handle,
+            &cid,
+            "rev1",
+        )
+        .unwrap();
+
+        let mut batch = ms.database().batch();
+        ms.user_hashes().stage_remove(&mut batch, &orphan_id);
+        batch.commit().unwrap();
+
+        assert!(matches!(
+            ops.list_repos_paginated(None, 100),
+            Err(MetastoreError::CorruptData(
+                "user_hash has no reverse mapping"
+            ))
+        ));
+
+        assert_eq!(ops.purge_orphan_repos(ms.database()).unwrap(), 1);
+
+        let repos = ops.list_repos_paginated(None, 100).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].user_id, live_id);
+        assert!(ops.lookup_handle(&orphan_handle).unwrap().is_none());
+        assert!(ops.lookup_handle(&live_handle).unwrap().is_some());
+
+        assert_eq!(ops.purge_orphan_repos(ms.database()).unwrap(), 0);
+    }
+
+    #[test]
+    fn purge_orphan_repos_removes_records_and_blocks_for_orphan_only() {
+        let (_dir, ms) = open_fresh();
+        let ops = ms.repo_ops();
+        let orphan_id = uuid::Uuid::new_v4();
+        let orphan_did = test_did("scallop");
+        let orphan_handle = test_handle("scallop");
+        let live_id = uuid::Uuid::new_v4();
+        let live_did = test_did("mussel");
+        let live_handle = test_handle("mussel");
+        let cid = test_cid_link(3);
+
+        ops.create_repo(
+            ms.database(),
+            orphan_id,
+            &orphan_did,
+            &orphan_handle,
+            &cid,
+            "rev1",
+        )
+        .unwrap();
+        ops.create_repo(
+            ms.database(),
+            live_id,
+            &live_did,
+            &live_handle,
+            &cid,
+            "rev1",
+        )
+        .unwrap();
+
+        let orphan_hash = ms.user_hashes().get(&orphan_id).unwrap();
+        let live_hash = ms.user_hashes().get(&live_id).unwrap();
+
+        let seed = |hash: UserHash| {
+            let mut batch = ms.database().batch();
+            let repo_data = ms.partition(Partition::RepoData);
+            let mut rec_key = record_user_prefix(hash);
+            rec_key.extend_from_slice(b"app.bsky.feed.post/seed");
+            batch.insert(repo_data, rec_key.as_slice(), b"r");
+            let mut blk_key = user_block_user_prefix(hash);
+            blk_key.extend_from_slice(b"seed-cid");
+            batch.insert(repo_data, blk_key.as_slice(), b"b");
+            batch.commit().unwrap();
+        };
+        seed(orphan_hash);
+        seed(live_hash);
+
+        let mut batch = ms.database().batch();
+        ms.user_hashes().stage_remove(&mut batch, &orphan_id);
+        batch.commit().unwrap();
+
+        let count = |prefix: &[u8]| ms.partition(Partition::RepoData).prefix(prefix).count();
+
+        assert_eq!(ops.purge_orphan_repos(ms.database()).unwrap(), 1);
+
+        assert_eq!(count(record_user_prefix(orphan_hash).as_slice()), 0);
+        assert_eq!(count(user_block_user_prefix(orphan_hash).as_slice()), 0);
+        assert_eq!(count(record_user_prefix(live_hash).as_slice()), 1);
+        assert_eq!(count(user_block_user_prefix(live_hash).as_slice()), 1);
     }
 
     #[test]

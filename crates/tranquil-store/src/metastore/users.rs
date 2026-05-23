@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 use super::encoding::KeyBuilder;
 use super::keys::{KeyTag, UserHash};
 
-const USER_SCHEMA_VERSION: u8 = 1;
+const USER_SCHEMA_VERSION: u8 = 2;
 const PASSKEY_SCHEMA_VERSION: u8 = 1;
 const TOTP_SCHEMA_VERSION: u8 = 1;
 const BACKUP_CODE_SCHEMA_VERSION: u8 = 1;
@@ -48,6 +48,7 @@ pub struct UserValue {
     pub signal_username: Option<String>,
     pub signal_verified: bool,
     pub delete_after_ms: Option<i64>,
+    pub inbound_migration: bool,
 }
 
 impl UserValue {
@@ -63,6 +64,11 @@ impl UserValue {
         let (&version, payload) = bytes.split_first()?;
         match version {
             USER_SCHEMA_VERSION => postcard::from_bytes(payload).ok(),
+            1 => {
+                let mut extended = payload.to_vec();
+                extended.push(0);
+                postcard::from_bytes(&extended).ok()
+            }
             _ => None,
         }
     }
@@ -534,11 +540,60 @@ mod tests {
             signal_username: None,
             signal_verified: false,
             delete_after_ms: None,
+            inbound_migration: false,
         };
         let bytes = val.serialize();
         assert_eq!(bytes[0], USER_SCHEMA_VERSION);
         let decoded = UserValue::deserialize(&bytes).unwrap();
         assert_eq!(val, decoded);
+    }
+
+    #[test]
+    fn deserialize_v1_defaults_inbound_migration_false() {
+        let val = UserValue {
+            id: uuid::Uuid::new_v4(),
+            did: "did:plc:squid".to_owned(),
+            handle: "witchcraft.systems".to_owned(),
+            email: Some("nel@oyster.cafe".to_owned()),
+            email_verified: true,
+            password_hash: Some("hashed".to_owned()),
+            created_at_ms: 1700000000000,
+            deactivated_at_ms: Some(1700000000000),
+            takedown_ref: None,
+            is_admin: false,
+            preferred_comms_channel: None,
+            key_bytes: vec![1, 2, 3],
+            encryption_version: 1,
+            account_type: 0,
+            password_required: true,
+            two_factor_enabled: false,
+            email_2fa_enabled: false,
+            totp_enabled: false,
+            allow_legacy_login: false,
+            preferred_locale: None,
+            invites_disabled: false,
+            migrated_to_pds: None,
+            migrated_at_ms: None,
+            discord_username: None,
+            discord_id: None,
+            discord_verified: false,
+            telegram_username: None,
+            telegram_chat_id: None,
+            telegram_verified: false,
+            signal_username: None,
+            signal_verified: false,
+            delete_after_ms: None,
+            inbound_migration: true,
+        };
+        let v2 = val.serialize();
+        let mut v1 = Vec::with_capacity(v2.len() - 1);
+        v1.push(1);
+        v1.extend_from_slice(&v2[1..v2.len() - 1]);
+        let decoded = UserValue::deserialize(&v1).expect("v1 user record must still decode");
+        assert!(!decoded.inbound_migration);
+        assert_eq!(decoded.did, val.did);
+        assert_eq!(decoded.handle, val.handle);
+        assert_eq!(decoded.deactivated_at_ms, val.deactivated_at_ms);
     }
 
     #[test]
@@ -774,6 +829,7 @@ mod tests {
             signal_username: None,
             signal_verified: false,
             delete_after_ms: None,
+            inbound_migration: false,
         };
         assert_eq!(user.channel_verification(), 0);
         user.email_verified = true;
@@ -821,6 +877,7 @@ mod tests {
             signal_username: None,
             signal_verified: false,
             delete_after_ms: None,
+            inbound_migration: false,
         };
         let mut bytes = val.serialize();
         bytes[0] = 99;

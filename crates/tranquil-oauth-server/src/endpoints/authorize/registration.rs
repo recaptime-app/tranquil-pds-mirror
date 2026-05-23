@@ -160,8 +160,10 @@ pub async fn register_complete(
             .into_response();
     }
 
-    let is_verified = match state.repos.user.get_session_info_by_did(&did).await {
-        Ok(Some(info)) => info.channel_verification.has_any_verified(),
+    let login_blocked = match state.repos.user.get_session_info_by_did(&did).await {
+        Ok(Some(info)) => {
+            tranquil_api::server::verification_blocks_login(&info.channel_verification)
+        }
         Ok(None) => {
             return (
                 StatusCode::FORBIDDEN,
@@ -189,7 +191,7 @@ pub async fn register_complete(
         }
     };
 
-    if !is_verified {
+    if login_blocked {
         let resend_info = tranquil_api::server::auto_resend_verification(&state, &did).await;
         return (
             StatusCode::FORBIDDEN,

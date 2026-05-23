@@ -70,6 +70,18 @@ pub fn handle_key(handle_lower: &str) -> SmallVec<[u8; 128]> {
         .build()
 }
 
+pub fn stage_repo_meta_removal(
+    batch: &mut fjall::OwnedWriteBatch,
+    repo_data: &fjall::Keyspace,
+    user_hash: UserHash,
+    handle: &str,
+) {
+    batch.remove(repo_data, repo_meta_key(user_hash).as_slice());
+    if !handle.is_empty() {
+        batch.remove(repo_data, handle_key(handle).as_slice());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

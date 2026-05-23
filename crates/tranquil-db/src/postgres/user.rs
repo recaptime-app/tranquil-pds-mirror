@@ -47,7 +47,7 @@ pub(crate) fn map_sqlx_error(e: sqlx::Error) -> DbError {
 impl UserRepository for PostgresUserRepository {
     async fn get_by_did(&self, did: &Did) -> Result<Option<UserRow>, DbError> {
         let row = sqlx::query!(
-            r#"SELECT id, did, handle, email, created_at, deactivated_at, takedown_ref, is_admin
+            r#"SELECT id, did, handle, email, created_at, deactivated_at, takedown_ref, is_admin, inbound_migration
                FROM users WHERE did = $1"#,
             did.as_str()
         )
@@ -64,12 +64,13 @@ impl UserRepository for PostgresUserRepository {
             deactivated_at: r.deactivated_at,
             takedown_ref: r.takedown_ref,
             is_admin: r.is_admin,
+            inbound_migration: r.inbound_migration,
         }))
     }
 
     async fn get_by_handle(&self, handle: &Handle) -> Result<Option<UserRow>, DbError> {
         let row = sqlx::query!(
-            r#"SELECT id, did, handle, email, created_at, deactivated_at, takedown_ref, is_admin
+            r#"SELECT id, did, handle, email, created_at, deactivated_at, takedown_ref, is_admin, inbound_migration
                FROM users WHERE handle = $1"#,
             handle.as_str()
         )
@@ -86,6 +87,7 @@ impl UserRepository for PostgresUserRepository {
             deactivated_at: r.deactivated_at,
             takedown_ref: r.takedown_ref,
             is_admin: r.is_admin,
+            inbound_migration: r.inbound_migration,
         }))
     }
 
@@ -1863,7 +1865,7 @@ impl UserRepository for PostgresUserRepository {
 
     async fn activate_account(&self, did: &Did) -> Result<bool, DbError> {
         let result = sqlx::query!(
-            "UPDATE users SET deactivated_at = NULL WHERE did = $1",
+            "UPDATE users SET deactivated_at = NULL, inbound_migration = FALSE WHERE did = $1",
             did.as_str()
         )
         .execute(&self.pool)
@@ -2426,8 +2428,8 @@ impl UserRepository for PostgresUserRepository {
                 handle, email, did, password_hash,
                 preferred_comms_channel,
                 discord_username, telegram_username, signal_username,
-                is_admin, deactivated_at, email_verified
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, FALSE) RETURNING id"#,
+                is_admin, deactivated_at, inbound_migration, email_verified
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE) RETURNING id"#,
         )
         .bind(input.handle.as_str())
         .bind(&input.email)
@@ -2439,6 +2441,7 @@ impl UserRepository for PostgresUserRepository {
         .bind(&input.signal_username)
         .bind(is_first_user)
         .bind(input.deactivated_at)
+        .bind(input.inbound_migration)
         .fetch_one(&mut *tx)
         .await;
 

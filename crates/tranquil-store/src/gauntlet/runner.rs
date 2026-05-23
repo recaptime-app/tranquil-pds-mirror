@@ -1216,9 +1216,10 @@ pub(super) async fn apply_op<S: StorageIO + Send + Sync + 'static>(
         Op::ExternalDeleteDataFile { choice } => {
             let s = harness.store.clone();
             let pick = choice.0;
-            let lost_cids = tokio::task::spawn_blocking(move || externally_delete_data_file(&s, pick))
-                .await
-                .map_err(|e| OpError::Join(e.to_string()))??;
+            let lost_cids =
+                tokio::task::spawn_blocking(move || externally_delete_data_file(&s, pick))
+                    .await
+                    .map_err(|e| OpError::Join(e.to_string()))??;
             if !lost_cids.is_empty() {
                 oracle.mark_blocks_lost(lost_cids);
             }
@@ -1561,9 +1562,10 @@ async fn apply_op_concurrent<S: StorageIO + Send + Sync + 'static>(
             let mut guard = shared.write.lock().await;
             let s = shared.store.clone();
             let pick = choice.0;
-            let lost_cids = tokio::task::spawn_blocking(move || externally_delete_data_file(&s, pick))
-                .await
-                .map_err(|e| OpError::Join(e.to_string()))??;
+            let lost_cids =
+                tokio::task::spawn_blocking(move || externally_delete_data_file(&s, pick))
+                    .await
+                    .map_err(|e| OpError::Join(e.to_string()))??;
             if !lost_cids.is_empty() {
                 guard.oracle.mark_blocks_lost(lost_cids);
             }
