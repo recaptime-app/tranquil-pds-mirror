@@ -37,6 +37,8 @@ export class AtprotoClient {
   private dpopKeyPair: DPoPKeyPair | null = null;
   private dpopNonce: string | null = null;
   private isRefreshing = false;
+  private oauthTokenEndpoint: string | null = null;
+  private oauthClientId: string | null = null;
 
   constructor(pdsUrl: string) {
     this.baseUrl = pdsUrl.replace(/\/$/, "");
@@ -66,10 +68,26 @@ export class AtprotoClient {
     this.dpopKeyPair = keyPair;
   }
 
+  setOAuthRefreshContext(tokenEndpoint: string, clientId: string) {
+    this.oauthTokenEndpoint = tokenEndpoint;
+    this.oauthClientId = clientId;
+  }
+
   private async tryRefreshToken(): Promise<boolean> {
     if (!this.refreshToken || this.isRefreshing) return false;
     this.isRefreshing = true;
     try {
+      if (this.dpopKeyPair && this.oauthTokenEndpoint && this.oauthClientId) {
+        const tokens = await refreshSourceOAuthToken(this.oauthTokenEndpoint, {
+          refreshToken: this.refreshToken,
+          clientId: this.oauthClientId,
+          dpopKeyPair: this.dpopKeyPair,
+          nonce: this.dpopNonce ?? undefined,
+        });
+        this.accessToken = tokens.access_token;
+        this.refreshToken = tokens.refresh_token ?? this.refreshToken;
+        return true;
+      }
       const session = await this.refreshSessionInternal(this.refreshToken);
       this.accessToken = session.accessJwt;
       this.refreshToken = session.refreshJwt;
@@ -209,7 +227,7 @@ export class AtprotoClient {
         message: res.statusText,
       }));
 
-      const isTokenExpired = res.status === 401 &&
+      const isTokenExpired = (res.status === 401 || res.status === 400) &&
         (err.error === "ExpiredToken" || err.error === "invalid_token" ||
           (err.message && err.message.includes("expired")));
 
@@ -292,6 +310,7 @@ export class AtprotoClient {
     );
 
     this.accessToken = session.accessJwt;
+    this.refreshToken = session.refreshJwt;
     return session;
   }
 
@@ -448,6 +467,7 @@ export class AtprotoClient {
 
     const session = (await res.json()) as Session;
     this.accessToken = session.accessJwt;
+    this.refreshToken = session.refreshJwt;
     return session;
   }
 
@@ -589,6 +609,7 @@ export class AtprotoClient {
       },
     );
     this.accessToken = session.accessJwt;
+    this.refreshToken = session.refreshJwt;
     return session;
   }
 
@@ -919,6 +940,73 @@ export async function exchangeOAuthCode(
 
     throw new Error(
       err.error_description || err.error || "Token exchange failed",
+    );
+  }
+
+  return res.json();
+}
+
+export async function refreshSourceOAuthToken(
+  tokenEndpoint: string,
+  params: {
+    refreshToken: string;
+    clientId: string;
+    dpopKeyPair: DPoPKeyPair;
+    nonce?: string;
+  },
+): Promise<OAuthTokenResponse> {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: params.refreshToken,
+    client_id: params.clientId,
+  });
+
+  const makeRequest = async (nonce?: string): Promise<Response> => {
+    const dpopProof = await createDPoPProof(
+      params.dpopKeyPair,
+      "POST",
+      tokenEndpoint,
+      nonce,
+    );
+
+    return fetch(tokenEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "DPoP": dpopProof,
+      },
+      body: body.toString(),
+    });
+  };
+
+  let res = await makeRequest(params.nonce);
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({
+      error: "token_error",
+      error_description: res.statusText,
+    }));
+
+    if (err.error === "use_dpop_nonce") {
+      const dpopNonce = res.headers.get("DPoP-Nonce");
+      if (dpopNonce) {
+        res = await makeRequest(dpopNonce);
+        if (!res.ok) {
+          const retryErr = await res.json().catch(() => ({
+            error: "token_error",
+            error_description: res.statusText,
+          }));
+          throw new Error(
+            retryErr.error_description || retryErr.error ||
+              "Token refresh failed",
+          );
+        }
+        return res.json();
+      }
+    }
+
+    throw new Error(
+      err.error_description || err.error || "Token refresh failed",
     );
   }
 

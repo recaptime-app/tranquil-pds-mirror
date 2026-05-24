@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { _ } from '../../lib/i18n'
   import { api, ApiError } from '../../lib/api'
   import { toast } from '../../lib/toast.svelte'
@@ -85,8 +85,9 @@
 
   onMount(async () => {
     await Promise.all([loadStats(), loadServerConfig(), loadUsers(true), loadSignalStatus()])
-    return () => stopSignalPolling()
   })
+
+  onDestroy(() => stopSignalPolling())
 
   async function loadStats() {
     loading = true

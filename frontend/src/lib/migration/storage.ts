@@ -23,6 +23,7 @@ export function saveMigrationState(state: MigrationState): void {
     authMethod: state.authMethod,
     passkeySetupToken: state.passkeySetupToken ?? undefined,
     localAccessToken: state.localAccessToken ?? undefined,
+    localRefreshToken: state.localRefreshToken ?? undefined,
     progress: {
       repoExported: state.progress.repoExported,
       repoImported: state.progress.repoImported,

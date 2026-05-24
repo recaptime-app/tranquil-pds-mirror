@@ -74,6 +74,7 @@ export function createInboundMigrationFlow() {
     passkeySetupToken: null,
     oauthCodeVerifier: null,
     localAccessToken: null,
+    localRefreshToken: null,
     generatedAppPassword: null,
     generatedAppPasswordName: null,
     handlePreservation: "new",
@@ -169,7 +170,8 @@ export function createInboundMigrationFlow() {
       redirectUri: getMigrationOAuthRedirectUri(),
       codeChallenge,
       state: oauthState,
-      scope: "atproto identity:* rpc:com.atproto.server.createAccount?aud=*",
+      scope:
+        "atproto identity:* account:repo?action=manage rpc:com.atproto.server.createAccount?aud=*",
       dpopJkt: dpopKeyPair.thumbprint,
       loginHint: state.sourceHandle,
     });
@@ -268,6 +270,10 @@ export function createInboundMigrationFlow() {
     sourceClient.setAccessToken(tokenResponse.access_token);
     sourceClient.setRefreshToken(tokenResponse.refresh_token ?? null);
     sourceClient.setDPoPKeyPair(dpopKeyPair);
+    sourceClient.setOAuthRefreshContext(
+      metadata.token_endpoint,
+      getMigrationOAuthClientId(),
+    );
 
     cleanupOAuthSessionData();
 
@@ -288,21 +294,37 @@ export function createInboundMigrationFlow() {
         if (state.localAccessToken) {
           localClient.setAccessToken(state.localAccessToken);
         }
+        if (state.localRefreshToken) {
+          localClient.setRefreshToken(state.localRefreshToken);
+        }
         if (state.authMethod === "passkey" && state.passkeySetupToken) {
           setStep("passkey-setup");
           migrationLog(
             "handleOAuthCallback: Resuming passkey flow at passkey-setup",
           );
         } else {
-          setStep("email-verify");
-          migrationLog(
-            "handleOAuthCallback: Resuming at email-verify for re-auth",
-          );
+          const alreadyVerified = await localClient
+            .checkChannelVerified(state.sourceDid, state.verificationChannel)
+            .catch(() => false);
+          if (alreadyVerified) {
+            migrationLog(
+              "handleOAuthCallback: Already verified, skipping email-verify",
+            );
+            await proceedAfterVerification();
+          } else {
+            setStep("email-verify");
+            migrationLog(
+              "handleOAuthCallback: Resuming at email-verify for re-auth",
+            );
+          }
         }
       } else if (targetStep === "email-verify") {
         localClient = createLocalClient();
         if (state.localAccessToken) {
           localClient.setAccessToken(state.localAccessToken);
+        }
+        if (state.localRefreshToken) {
+          localClient.setRefreshToken(state.localRefreshToken);
         }
         setStep("email-verify");
         migrationLog("handleOAuthCallback: Resuming at email-verify");
@@ -459,6 +481,7 @@ export function createInboundMigrationFlow() {
         });
         localClient.setAccessToken(session.accessJwt);
         state.localAccessToken = session.accessJwt;
+        state.localRefreshToken = session.refreshJwt;
       }
 
       setProgress({ currentOperation: "Exporting repository..." });
@@ -646,50 +669,48 @@ export function createInboundMigrationFlow() {
     );
   }
 
+  async function proceedAfterVerification(): Promise<void> {
+    if (state.authMethod === "passkey") {
+      setStep("passkey-setup");
+      return;
+    }
+
+    if (!localClient!.getAccessToken()) {
+      await localClient!.loginDeactivated(
+        state.targetEmail,
+        state.targetPassword,
+      );
+    }
+
+    if (!sourceClient) {
+      setStep("source-handle");
+      setError(
+        "Email verified! Please log in to your old account again to complete the migration.",
+      );
+      return;
+    }
+
+    if (state.sourceDid.startsWith("did:web:")) {
+      const credentials = await localClient!.getRecommendedDidCredentials();
+      state.targetVerificationMethod =
+        credentials.verificationMethods?.atproto || null;
+      setStep("did-web-update");
+    } else {
+      await sourceClient.requestPlcOperationSignature();
+      setStep("plc-token");
+    }
+  }
+
   const verificationPoller = createEmailVerificationPoller({
     async checkVerified() {
       if (!localClient) return false;
-      if (state.verificationChannel === "email") {
-        return localClient.checkEmailVerified(state.targetEmail);
-      }
       return localClient.checkChannelVerified(
         state.sourceDid,
         state.verificationChannel,
       );
     },
     async onVerified() {
-      if (state.authMethod === "passkey") {
-        migrationLog(
-          "checkEmailVerifiedAndProceed: Email verified, proceeding to passkey setup",
-        );
-        setStep("passkey-setup");
-        return;
-      }
-
-      if (!localClient!.getAccessToken()) {
-        await localClient!.loginDeactivated(
-          state.targetEmail,
-          state.targetPassword,
-        );
-      }
-
-      if (!sourceClient) {
-        setStep("source-handle");
-        setError(
-          "Email verified! Please log in to your old account again to complete the migration.",
-        );
-        return;
-      }
-
-      if (state.sourceDid.startsWith("did:web:")) {
-        const credentials = await localClient!.getRecommendedDidCredentials();
-        state.targetVerificationMethod =
-          credentials.verificationMethods?.atproto || null;
-        setStep("did-web-update");
-      } else {
-        await sourceClient.requestPlcOperationSignature();
-        setStep("plc-token");
-      }
+      await proceedAfterVerification();
     },
   });
 
@@ -776,16 +797,10 @@ export function createInboundMigrationFlow() {
         });
         setProgress({ deactivated: true });
       } catch (deactivateErr) {
-        const err = deactivateErr as Error & {
-          error?: string;
-          status?: number;
-        };
-        migrationLog("Step 5 FAILED: Could not deactivate on source PDS", {
-          durationMs: Date.now() - deactivateStart,
-          error: err.message,
-          errorCode: err.error,
-          status: err.status,
-        });
+        console.error(
+          "[MIGRATION] Failed to deactivate old account on source PDS",
+          deactivateErr,
+        );
       }
 
       migrationLog("submitPlcToken SUCCESS: Migration complete", {
@@ -859,10 +874,10 @@ export function createInboundMigrationFlow() {
         });
         setProgress({ deactivated: true });
       } catch (deactivateErr) {
-        const err = deactivateErr as Error & { error?: string };
-        migrationLog("Could not deactivate on source PDS", {
-          error: err.message,
-        });
+        console.error(
+          "[MIGRATION] Failed to deactivate old account on source PDS",
+          deactivateErr,
+        );
       }
 
       migrationLog("completeDidWebMigration SUCCESS");
@@ -963,6 +978,7 @@ export function createInboundMigrationFlow() {
       passkeySetupToken: null,
       oauthCodeVerifier: null,
       localAccessToken: null,
+      localRefreshToken: null,
       generatedAppPassword: null,
       generatedAppPasswordName: null,
       handlePreservation: "new",
@@ -988,6 +1004,7 @@ export function createInboundMigrationFlow() {
     state.targetEmail = stored.targetEmail;
     state.authMethod = stored.authMethod ?? "password";
     state.localAccessToken = stored.localAccessToken ?? null;
+    state.localRefreshToken = stored.localRefreshToken ?? null;
     state.progress = {
       ...createInitialProgress(),
       ...stored.progress,

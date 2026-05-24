@@ -84,6 +84,7 @@ function createInboundState(
     passkeySetupToken: null,
     oauthCodeVerifier: null,
     localAccessToken: null,
+    localRefreshToken: null,
     generatedAppPassword: null,
     generatedAppPasswordName: null,
     handlePreservation: "new",

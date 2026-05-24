@@ -214,10 +214,10 @@ impl AppState {
     pub async fn new(shutdown: CancellationToken) -> Result<Self, Box<dyn Error>> {
         let cfg = tranquil_config::get();
 
-        match cfg.storage.repo_backend() {
+        let mut state = match cfg.storage.repo_backend() {
             tranquil_config::RepoBackend::TranquilStore => {
                 tracing::info!("tranquil-store repo backend active. EXPERIMENTAL!");
-                Ok(Self::from_store(shutdown).await)
+                Self::from_store(shutdown).await
             }
             tranquil_config::RepoBackend::Postgres => {
                 let database_url = &cfg.database.url;
@@ -247,28 +247,22 @@ impl AppState {
                     .await
                     .map_err(|e| format!("Failed to run migrations: {}", e))?;
 
-                let bootstrap_invite_code = match (
-                    cfg.server.invite_code_required,
-                    sqlx::query_scalar!("SELECT COUNT(*) FROM users")
-                        .fetch_one(&db)
-                        .await,
-                ) {
-                    (true, Ok(Some(0))) => {
-                        let code = crate::util::gen_invite_code();
-                        tracing::info!(
-                            "No users exist and invite codes are required. Bootstrap invite code: {}",
-                            code
-                        );
-                        Some(code)
-                    }
-                    _ => None,
-                };
-
-                let mut state = Self::from_db(db, shutdown).await;
-                state.bootstrap_invite_code = bootstrap_invite_code;
-                Ok(state)
+                Self::from_db(db, shutdown).await
             }
+        };
+
+        if cfg.server.invite_code_required
+            && state.repos.user.count_users().await.unwrap_or(1) == 0
+        {
+            let code = crate::util::gen_invite_code();
+            tracing::info!(
+                "No users exist and invite codes are required. Bootstrap invite code: {}",
+                code
+            );
+            state.bootstrap_invite_code = Some(code);
         }
+
+        Ok(state)
     }
 
     pub async fn from_db(db: PgPool, shutdown: CancellationToken) -> Self {
