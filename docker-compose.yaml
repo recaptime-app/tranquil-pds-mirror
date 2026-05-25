@@ -29,7 +29,7 @@ services:
         cargo watch -x "run -p tranquil-server --features native-tls-roots -- --config /app/config.dev.toml"
       '
     environment:
-      SERVER_HOST: "0.0.0.0"
+      SERVER_HOST: "[::]"
       SQLX_OFFLINE: "true"
       PLC_DIRECTORY_URL: "http://plc:2582"
     volumes:
@@ -45,17 +45,6 @@ services:
         condition: service_healthy
       plc:
         condition: service_started
-
-  frontend:
-    profiles: [prod]
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    image: tranquil-pds-frontend
-    ports:
-      - "8080:80"
-    depends_on:
-      - app
 
   frontend-dev:
     profiles: [dev]

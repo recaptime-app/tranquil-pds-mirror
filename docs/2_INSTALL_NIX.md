@@ -81,14 +81,7 @@ See [example.toml](https://tangled.org/tranquil.farm/tranquil-pds/blob/main/exam
 
 ### Secrets
 
-Additionally, you will need to provide the following environment variables.
-
-```env
-# use `openssl rand -base64 32` to generate these.
-JWT_SECRET=<secret_here>
-DPOP_SECRET=<secret_here>
-MASTER_KEY=<secret_here>
-```
+Secrets must not live in the nix store. Provide the `jwt_secret`, `dpop_secret`, and `master_key` values through `environmentFiles` instead of `settings`. example.toml documents the matching environment variable name for each. Generate each with `openssl rand -base64 48`.
 
 The simplest (least secure and least reproducible) option is to provide these secrets in a `.env` file using the `environmentFiles` option as shown above.
 
@@ -224,7 +217,7 @@ The log entry shold look something like this:
 
 ## Binary cache
 
-Pre-built artifacts from the flake — the package, frontend, and devshell — are published to [tranquil.cachix.org](https://tranquil.cachix.org). To pull from it instead of building locally, add to your NixOS config:
+The flake publishes its package, frontend, and devshell to [tranquil.cachix.org](https://tranquil.cachix.org). To pull from it instead of building locally, add to your NixOS config:
 
 ```nix
 nix.settings = {

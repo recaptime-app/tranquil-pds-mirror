@@ -1,0 +1,30 @@
+#!/sbin/openrc-run
+
+name="tranquil-pds-nginx"
+description="Tranquil PDS nginx reverse proxy"
+
+: "${TRANQUIL_NGINX_IMAGE:=docker.io/library/nginx:1.29-alpine}"
+: "${TRANQUIL_DATA:=/srv/tranquil-pds}"
+: "${TRANQUIL_CONFIG_DIR:=/srv/tranquil-pds/config}"
+
+depend() {
+    need tranquil-pds-app
+}
+
+start() {
+    ebegin "Starting ${name}"
+    podman container exists tranquil-pds-nginx && podman rm -f tranquil-pds-nginx
+    podman run -d --name tranquil-pds-nginx \
+        --pod tranquil-pds \
+        -v "${TRANQUIL_CONFIG_DIR}/nginx.conf:/etc/nginx/nginx.conf:ro,Z" \
+        -v "${TRANQUIL_DATA}/certs:/etc/nginx/certs:ro,Z" \
+        -v "${TRANQUIL_DATA}/acme:/var/www/acme:ro,Z" \
+        "${TRANQUIL_NGINX_IMAGE}"
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping ${name}"
+    podman rm -f tranquil-pds-nginx
+    eend $?
+}

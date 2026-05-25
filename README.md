@@ -6,7 +6,7 @@ A Personal Data Server for the AT Protocol.
 
 We came together to make this PDS to enable and empower our users to better host their data on this shared protocol. All of our decisions as a project are guided by their usefulness to the community: PDS hosters and end-users both. 
 
-Comparatively: Bluesky the company created a "reference PDS" that we can self-host quite easily, and that's great, but Bluesky has an incentive to make software for themselvess first & foremost, then secondly their software can be useful for us self-hosters. In contrast, Tranquil is not from a company, and will never be.
+Comparatively: Bluesky the company created a "reference PDS" that we can self-host quite easily, and that's great, but Bluesky has an incentive to make software for themselves first & foremost, then secondly their software can be useful for us self-hosters. In contrast, Tranquil is not from a company, and will never be.
 
 ## What's different about Tranquil PDS
 
@@ -20,7 +20,7 @@ It is a superset of the reference PDS, including:
 - account delegation: letting others manage an account with configurable permission levels
 - a built-in web UI for account management, repo browsing, and admin
 
-Unlike the ref PDS, Tranquil itself is compiled to a single binary with no nodeJS runtime. However, at time of writing, Tranquil requires postgres running separately.
+Unlike the ref PDS, Tranquil is a single binary with no nodejs runtime. That said, at time of writing, Tranquil does require postgres running separately.
 
 ## Quick Start
 
@@ -46,24 +46,28 @@ just test
 just lint
 ```
 
-Nix users can enter a devshell with `nix develop`, or `direnv allow` to auto-enter via the bundled `.envrc`. Pre-built artifacts (including the devshell) are available from our [binary cache](docs/install-nix.md#binary-cache).
+Nix users can enter a devshell with `nix develop`, or `direnv allow` to auto-enter via the bundled `.envrc`. Pre-built artifacts including the devshell are available from our [binary cache](docs/2_INSTALL_NIX.md#binary-cache).
 
 ## Production Deployment
 
 ### Quick Deploy (Docker/Podman Compose)
 
-Edit `config.toml` with your values. Generate secrets with `openssl rand -base64 48`.
+`docker-compose.prod.yaml` pulls the prebuilt image `atcr.io/tranquil.farm/tranquil-pds:latest`. Sign in to the registry first with `podman login atcr.io`. The Containers guide covers building from source.
 
 ```bash
 cp example.toml config.toml
+```
+
+Edit `config.toml` with your values and generate secrets with `openssl rand -base64 48`. Set the postgres password to match `docker-compose.prod.yaml`. nginx needs a TLS certificate before it starts, so follow the wildcard cert steps in the [Containers guide](docs/2_INSTALL_CONTAINERS.md).
+
+```bash
 podman-compose -f docker-compose.prod.yaml up -d
 ```
 
 ### Installation Guides
 
-- [Nix](docs/install-nix.md)
-- [Containers](docs/install-containers.md)
-- [Kubernetes](docs/install-kubernetes.md)
+- [Nix](docs/2_INSTALL_NIX.md)
+- [Containers](docs/2_INSTALL_CONTAINERS.md)
 
 ## Community
 
@@ -76,7 +80,7 @@ We currently don't have a shared space to chat and organize Tranquil things, but
 - [@oyster.cafe](https://tangled.org/did:plc:3fwecdnvtcscjnrx2p4n7alz)
 - [@nel.pet](https://tangled.org/did:plc:h5wsnqetncv6lu2weom35lg2)
 
-### Amazing contributers
+### Amazing contributors
 
 - [@isabelroses.com](https://tangled.org/did:plc:qxichs7jsycphrsmbujwqbfb)
 - [@quilling.dev](https://tangled.org/did:plc:jrtgsidnmxaen4offglr5lsh)

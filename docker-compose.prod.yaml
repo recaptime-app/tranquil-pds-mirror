@@ -1,12 +1,9 @@
 services:
   tranquil-pds:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: tranquil-pds:latest
+    image: atcr.io/tranquil.farm/tranquil-pds:latest
     restart: unless-stopped
     environment:
-      SERVER_HOST: "0.0.0.0"
+      SERVER_HOST: "[::]"
     volumes:
       - ./config.toml:/etc/tranquil-pds/config.toml:ro
       # In memory of @olaren.dev's blobs when lewis forgot to update /tranquil to /tranquil-pds :(

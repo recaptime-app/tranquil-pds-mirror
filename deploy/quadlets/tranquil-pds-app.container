@@ -3,9 +3,9 @@ Description=Tranquil PDS AT Protocol PDS
 After=tranquil-pds-db.service
 [Container]
 ContainerName=tranquil-pds-app
-Image=localhost/tranquil-pds:latest
+Image=atcr.io/tranquil.farm/tranquil-pds:latest
 Pod=tranquil-pds.pod
-Environment=SERVER_HOST=0.0.0.0
+Environment=SERVER_HOST=[::]
 Environment=SERVER_PORT=3000
 Volume=/srv/tranquil-pds/config/config.toml:/etc/tranquil-pds/config.toml:ro,Z
 Volume=/srv/tranquil-pds/blobs:/var/lib/tranquil-pds/blobs:Z

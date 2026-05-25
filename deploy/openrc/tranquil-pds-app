@@ -1,0 +1,43 @@
+#!/sbin/openrc-run
+
+name="tranquil-pds-app"
+description="Tranquil PDS app"
+
+: "${TRANQUIL_IMAGE:=atcr.io/tranquil.farm/tranquil-pds:latest}"
+: "${TRANQUIL_DATA:=/srv/tranquil-pds}"
+: "${TRANQUIL_CONFIG:=/srv/tranquil-pds/config/config.toml}"
+
+depend() {
+    need tranquil-pds-db
+}
+
+start() {
+    ebegin "Starting ${name}"
+    podman container exists tranquil-pds-app && podman rm -f tranquil-pds-app
+    podman run -d --name tranquil-pds-app \
+        --pod tranquil-pds \
+        -e "SERVER_HOST=[::]" \
+        -e SERVER_PORT=3000 \
+        -v "${TRANQUIL_CONFIG}:/etc/tranquil-pds/config.toml:ro,Z" \
+        -v "${TRANQUIL_DATA}/blobs:/var/lib/tranquil-pds/blobs:Z" \
+        -v "${TRANQUIL_DATA}/store:/var/lib/tranquil-pds/store:Z" \
+        "${TRANQUIL_IMAGE}"
+    local rc=$?
+    [ "${rc}" -eq 0 ] || { eend "${rc}"; return "${rc}"; }
+
+    ebegin "Waiting for tranquil-pds to accept connections"
+    local waited=0
+    while [ "${waited}" -lt 60 ]; do
+        podman exec tranquil-pds-app wget -q --spider http://localhost:3000/xrpc/_health && break
+        sleep 1
+        waited=$((waited + 1))
+    done
+    [ "${waited}" -lt 60 ]
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping ${name}"
+    podman rm -f tranquil-pds-app
+    eend $?
+}

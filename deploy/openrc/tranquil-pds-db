@@ -1,0 +1,41 @@
+#!/sbin/openrc-run
+
+name="tranquil-pds-db"
+description="Tranquil PDS postgres"
+
+: "${TRANQUIL_DB_IMAGE:=docker.io/library/postgres:18-alpine}"
+: "${TRANQUIL_DATA:=/srv/tranquil-pds}"
+
+depend() {
+    need tranquil-pds-pod
+}
+
+start() {
+    ebegin "Starting ${name}"
+    podman container exists tranquil-pds-db && podman rm -f tranquil-pds-db
+    podman run -d --name tranquil-pds-db \
+        --pod tranquil-pds \
+        -e POSTGRES_USER=tranquil_pds \
+        -e POSTGRES_DB=pds \
+        --secret tranquil-pds-db-password,type=env,target=POSTGRES_PASSWORD \
+        -v "${TRANQUIL_DATA}/postgres:/var/lib/postgresql:Z" \
+        "${TRANQUIL_DB_IMAGE}"
+    local rc=$?
+    [ "${rc}" -eq 0 ] || { eend "${rc}"; return "${rc}"; }
+
+    ebegin "Waiting for postgres to accept connections"
+    local waited=0
+    while [ "${waited}" -lt 30 ]; do
+        podman exec tranquil-pds-db pg_isready -U tranquil_pds -d pds >/dev/null 2>&1 && break
+        sleep 1
+        waited=$((waited + 1))
+    done
+    [ "${waited}" -lt 30 ]
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping ${name}"
+    podman rm -f tranquil-pds-db
+    eend $?
+}

@@ -159,8 +159,9 @@ podman-down:
 podman-logs:
     podman compose logs -f
 container-build:
-    podman build -t tranquil-pds:latest .
-    podman build -t tranquil-pds-frontend:latest ./frontend
+    podman build -t atcr.io/tranquil.farm/tranquil-pds:latest .
+container-pull:
+    podman pull atcr.io/tranquil.farm/tranquil-pds:latest
 
 frontend-dev:
     . ~/.deno/env && cd frontend && deno task dev

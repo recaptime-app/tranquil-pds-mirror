@@ -50,7 +50,7 @@ RUN apk add --no-cache ca-certificates
 COPY --from=builder /tmp/tranquil-pds /usr/local/bin/tranquil-pds
 COPY --from=frontend /app/dist /var/lib/tranquil-pds/frontend
 WORKDIR /app
-ENV SERVER_HOST=0.0.0.0
+ENV SERVER_HOST=[::]
 ENV SERVER_PORT=3000
 EXPOSE 3000
 CMD ["tranquil-pds"]
