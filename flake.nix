@@ -36,7 +36,7 @@
             imports = [ ./module.nix ];
             config.services.tranquil-pds = {
               package = self.packages.${pkgs.stdenv.hostPlatform.system}.tranquil-pds;
-              settings.frontend.package = self.packages.${pkgs.stdenv.hostPlatform.system}.tranquil-frontend;
+              settings.frontend.dir = self.packages.${pkgs.stdenv.hostPlatform.system}.tranquil-frontend;
             };
           };
       };
