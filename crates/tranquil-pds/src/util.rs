@@ -7,6 +7,7 @@ use rand::Rng;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
@@ -96,20 +97,97 @@ pub fn generate_random_token() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-pub fn extract_client_ip(headers: &HeaderMap, addr: Option<SocketAddr>) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ForwardedTrust {
+    Peer,
+    Proxies(NonZeroUsize),
+}
+
+fn resolve_trust(configured: Option<usize>, terminates_tls: bool) -> ForwardedTrust {
+    let count = configured.unwrap_or(if terminates_tls { 0 } else { 1 });
+    match NonZeroUsize::new(count) {
+        Some(proxies) => ForwardedTrust::Proxies(proxies),
+        None => ForwardedTrust::Peer,
+    }
+}
+
+pub(crate) fn forwarded_trust() -> ForwardedTrust {
+    match tranquil_config::try_get() {
+        Some(cfg) => resolve_trust(
+            cfg.server.trusted_proxy_count,
+            cfg.server.tls.material().is_some(),
+        ),
+        None => ForwardedTrust::Peer,
+    }
+}
+
+fn forwarded_client_ip(headers: &HeaderMap, trusted: NonZeroUsize) -> Option<String> {
     if let Some(forwarded) = headers.get("x-forwarded-for")
         && let Ok(value) = forwarded.to_str()
-        && let Some(first_ip) = value.split(',').next()
     {
-        return first_ip.trim().to_string();
+        let hops: Vec<&str> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if let Some(client) = hops
+            .len()
+            .checked_sub(trusted.get())
+            .and_then(|idx| hops.get(idx))
+        {
+            return Some((*client).to_string());
+        }
     }
-    if let Some(real_ip) = headers.get("x-real-ip")
+    if trusted.get() == 1
+        && let Some(real_ip) = headers.get("x-real-ip")
         && let Ok(value) = real_ip.to_str()
+        && !value.trim().is_empty()
     {
-        return value.trim().to_string();
+        return Some(value.trim().to_string());
+    }
+    None
+}
+
+pub(crate) fn extract_client_ip(
+    headers: &HeaderMap,
+    addr: Option<SocketAddr>,
+    trust: ForwardedTrust,
+) -> String {
+    if let ForwardedTrust::Proxies(trusted) = trust
+        && let Some(client) = forwarded_client_ip(headers, trusted)
+    {
+        return client;
     }
     addr.map(|a| a.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+pub(crate) fn client_ip_from_parts(parts: &axum::http::request::Parts) -> String {
+    let addr = parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0);
+    extract_client_ip(&parts.headers, addr, forwarded_trust())
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientIp(String);
+
+impl ClientIp {
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ClientIp {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(ClientIp(client_ip_from_parts(parts)))
+    }
 }
 
 pub fn set_discord_bot_username(username: String) {
@@ -227,6 +305,135 @@ pub fn is_self_hosted_did_web_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::{ConnectInfo, FromRequestParts};
+
+    fn proxies(count: usize) -> ForwardedTrust {
+        ForwardedTrust::Proxies(NonZeroUsize::new(count).unwrap())
+    }
+
+    #[test]
+    fn resolve_trust_override_wins_over_tls() {
+        assert_eq!(resolve_trust(Some(1), true), proxies(1));
+        assert_eq!(resolve_trust(Some(3), false), proxies(3));
+        assert_eq!(resolve_trust(Some(0), true), ForwardedTrust::Peer);
+        assert_eq!(resolve_trust(Some(0), false), ForwardedTrust::Peer);
+    }
+
+    #[test]
+    fn resolve_trust_infers_from_tls_when_unset() {
+        assert_eq!(resolve_trust(None, true), ForwardedTrust::Peer);
+        assert_eq!(resolve_trust(None, false), proxies(1));
+    }
+
+    fn parts_with(
+        header: Option<(&str, &str)>,
+        peer: Option<SocketAddr>,
+    ) -> axum::http::request::Parts {
+        let mut builder = axum::http::Request::builder();
+        if let Some((name, value)) = header {
+            builder = builder.header(name, value);
+        }
+        let mut parts = builder.body(()).unwrap().into_parts().0;
+        if let Some(addr) = peer {
+            parts.extensions.insert(ConnectInfo(addr));
+        }
+        parts
+    }
+
+    #[tokio::test]
+    async fn client_ip_falls_back_to_peer_socket() {
+        let peer: SocketAddr = "203.0.113.7:51000".parse().unwrap();
+        let mut parts = parts_with(None, Some(peer));
+        let ip = ClientIp::from_request_parts(&mut parts, &()).await.unwrap();
+        assert_eq!(ip.into_string(), "203.0.113.7");
+    }
+
+    #[tokio::test]
+    async fn client_ip_ignores_forwarded_when_config_absent() {
+        let peer: SocketAddr = "203.0.113.7:51000".parse().unwrap();
+        let mut parts = parts_with(
+            Some(("x-forwarded-for", "198.51.100.4, 10.0.0.1")),
+            Some(peer),
+        );
+        let ip = ClientIp::from_request_parts(&mut parts, &()).await.unwrap();
+        assert_eq!(ip.into_string(), "203.0.113.7");
+    }
+
+    #[tokio::test]
+    async fn client_ip_unknown_without_headers_or_peer() {
+        let mut parts = parts_with(None, None);
+        let ip = ClientIp::from_request_parts(&mut parts, &()).await.unwrap();
+        assert_eq!(ip.into_string(), "unknown");
+    }
+
+    #[tokio::test]
+    async fn client_ip_renders_ipv6_peer_without_brackets() {
+        let peer: SocketAddr = "[2001:db8::beef]:51000".parse().unwrap();
+        let mut parts = parts_with(None, Some(peer));
+        let ip = ClientIp::from_request_parts(&mut parts, &()).await.unwrap();
+        assert_eq!(ip.into_string(), "2001:db8::beef");
+    }
+
+    #[test]
+    fn extract_client_ip_single_proxy_takes_rightmost_forwarded_hop() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "9.9.9.9, 198.51.100.4, 10.0.0.1".parse().unwrap(),
+        );
+        let peer: SocketAddr = "203.0.113.7:51000".parse().unwrap();
+        assert_eq!(
+            extract_client_ip(&headers, Some(peer), proxies(1)),
+            "10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn extract_client_ip_two_proxies_skips_inner_hop() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "9.9.9.9, 198.51.100.4, 10.0.0.1".parse().unwrap(),
+        );
+        let peer: SocketAddr = "203.0.113.7:51000".parse().unwrap();
+        assert_eq!(
+            extract_client_ip(&headers, Some(peer), proxies(2)),
+            "198.51.100.4"
+        );
+    }
+
+    #[test]
+    fn extract_client_ip_more_trusted_proxies_than_hops_uses_peer() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "10.0.0.1".parse().unwrap());
+        let peer: SocketAddr = "203.0.113.7:51000".parse().unwrap();
+        assert_eq!(
+            extract_client_ip(&headers, Some(peer), proxies(2)),
+            "203.0.113.7"
+        );
+    }
+
+    #[test]
+    fn extract_client_ip_ignores_forwarded_headers_for_direct_peer() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "9.9.9.9".parse().unwrap());
+        headers.insert("x-real-ip", "9.9.9.9".parse().unwrap());
+        let peer: SocketAddr = "203.0.113.7:51000".parse().unwrap();
+        assert_eq!(
+            extract_client_ip(&headers, Some(peer), ForwardedTrust::Peer),
+            "203.0.113.7"
+        );
+    }
+
+    #[test]
+    fn extract_client_ip_direct_peer_without_socket_is_unknown() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "9.9.9.9".parse().unwrap());
+        assert_eq!(
+            extract_client_ip(&headers, None, ForwardedTrust::Peer),
+            "unknown"
+        );
+    }
 
     #[test]
     fn test_parse_repeated_query_param_repeated() {

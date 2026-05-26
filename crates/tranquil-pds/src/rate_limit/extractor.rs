@@ -9,7 +9,7 @@ use axum::{
 use crate::api::error::ApiError;
 use crate::oauth::OAuthError;
 use crate::state::{AppState, RateLimitKind};
-use crate::util::extract_client_ip;
+use crate::util::client_ip_from_parts;
 
 pub trait RateLimitPolicy: Send + Sync + 'static {
     const KIND: RateLimitKind;
@@ -173,7 +173,7 @@ impl<P: RateLimitPolicy, R: RateLimitRejection> FromRequestParts<AppState>
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let client_ip = extract_client_ip(&parts.headers, None);
+        let client_ip = client_ip_from_parts(parts);
 
         if !state.check_rate_limit(P::KIND, &client_ip).await {
             tracing::warn!(

@@ -302,6 +302,7 @@ pub async fn register_complete(
 pub async fn establish_session(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     auth: tranquil_pds::auth::Auth<tranquil_pds::auth::Active>,
 ) -> Response {
     let did = &auth.did;
@@ -319,7 +320,7 @@ pub async fn establish_session(
             let device_data = DeviceData {
                 session_id: SessionId::generate(),
                 user_agent: extract_user_agent(&headers),
-                ip_address: extract_client_ip(&headers, None),
+                ip_address: client_ip.into_string(),
                 last_seen_at: Utc::now(),
             };
 

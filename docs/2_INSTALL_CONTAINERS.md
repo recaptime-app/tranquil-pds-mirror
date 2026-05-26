@@ -21,7 +21,18 @@ This guide covers deploying Tranquil PDS using containers with podman.
 
 The bundled pod ships nginx as its reverse proxy, and this guide uses it throughout. nginx is just the default. Swap in whatever you prefer. Tranquil serves its API and web UI on a single port, so any reverse proxy works once it forwards to the app on `[::1]:3000`.
 
-Caddy is one good option. It grabs & renews TLS certificates automatically, including the wildcard this setup needs (if you're lucky, which Lewis is not), so the manual certbot steps later become unnecessary. We plan to soon also have the ability to terminate TLS directly in-Tranquil so that there's no reverse proxy needed.
+Caddy is one good option. It grabs & renews TLS certificates automatically, including the wildcard this setup needs (if you're lucky, which Lewis is not), so the manual certbot steps later become unnecessary.
+
+### Terminating TLS in Tranquil
+
+You can also skip the reverse proxy and let Tranquil terminate TLS itself. Set `TLS_CERT_PATH` and `TLS_KEY_PATH` (or the `[server.tls]` block in the config file) to your cert chain and private key.
+
+Tranquil does not request or renew certs. Keep using certbot, acme.sh, lego, step, or whatever you're already using. After each renewal, send the process `SIGHUP` to reload the certificates and key. Live requests are unaffected and new connections pick up the new cert.
+
+### Client IP and forwarded headers
+
+Rate limiting and device records are based on the client IP ofc. Behind a reverse proxy, Tranquil reads it from `X-Forwarded-For`, counting hops from the right. You can set `TRUSTED_PROXY_COUNT` for how many proxies to trust. Leave it unset to let Tranquil assume the count. We assumes 1 proxy when something else terminates TLS, and 0 when Tranquil terminates TLS itself. At 0 it uses the direct conn address and ignores forwarded headers that a direct client could maliciously invent.
+
 
 ## Quickstart (docker/podman compose)
 

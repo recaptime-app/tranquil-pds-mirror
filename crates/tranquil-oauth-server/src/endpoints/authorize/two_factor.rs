@@ -75,6 +75,7 @@ pub async fn authorize_2fa_post(
     State(state): State<AppState>,
     _rate_limit: OAuthRateLimited<OAuthAuthorizeLimit>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     Json(form): Json<Authorize2faSubmit>,
 ) -> Response {
     let json_error = |status: StatusCode, error: &str, description: &str| -> Response {
@@ -251,7 +252,7 @@ pub async fn authorize_2fa_post(
                 let device_data = DeviceData {
                     session_id: SessionId::generate(),
                     user_agent: extract_user_agent(&headers),
-                    ip_address: extract_client_ip(&headers, None),
+                    ip_address: client_ip.into_string(),
                     last_seen_at: Utc::now(),
                 };
                 if state

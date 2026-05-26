@@ -12,7 +12,7 @@ use tranquil_pds::oauth::client::{build_client_metadata, delegation_oauth_urls};
 use tranquil_pds::rate_limit::{LoginLimit, OAuthRateLimited, TotpVerifyLimit};
 use tranquil_pds::state::AppState;
 use tranquil_pds::types::PlainPassword;
-use tranquil_pds::util::extract_client_ip;
+use tranquil_pds::util::ClientIp;
 use tranquil_types::did_doc::{extract_handle, extract_pds_endpoint};
 use tranquil_types::{Did, RequestId};
 
@@ -402,6 +402,7 @@ pub struct DelegationTokenAuthSubmit {
 pub async fn delegation_auth_token(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     auth: Auth<Active>,
     Json(form): Json<DelegationTokenAuthSubmit>,
 ) -> Response {
@@ -428,7 +429,7 @@ pub async fn delegation_auth_token(
         return resp;
     }
 
-    let ip = extract_client_ip(&headers, None);
+    let ip = client_ip.into_string();
     let user_agent = tranquil_pds::util::extract_user_agent(&headers);
 
     finalize_delegation_auth(

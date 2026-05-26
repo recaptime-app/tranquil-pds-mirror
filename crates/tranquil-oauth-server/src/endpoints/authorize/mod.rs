@@ -23,7 +23,7 @@ use tranquil_pds::rate_limit::{
 };
 use tranquil_pds::state::AppState;
 use tranquil_pds::types::{Did, Handle, PlainPassword};
-use tranquil_pds::util::extract_client_ip;
+use tranquil_pds::util::ClientIp;
 use tranquil_types::{AuthorizationCode, ClientId, DeviceId as DeviceIdType, RequestId};
 use urlencoding::encode as url_encode;
 

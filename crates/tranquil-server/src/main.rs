@@ -14,6 +14,8 @@ use tranquil_pds::scheduled::{
 };
 use tranquil_pds::state::AppState;
 
+mod tls;
+
 #[derive(Parser)]
 #[command(name = "tranquil-pds", version = BUILD_VERSION, about = "Tranquil AT Protocol PDS")]
 struct Cli {
@@ -55,6 +57,13 @@ async fn main() -> ExitCode {
                 };
                 if let Err(e) = config.validate(*ignore_secrets) {
                     eprint!("{e}");
+                    return ExitCode::FAILURE;
+                }
+                if !*ignore_secrets
+                    && let Some((cert, key)) = config.server.tls.material()
+                    && let Err(e) = tls::load_certified_key(cert, key)
+                {
+                    eprintln!("TLS material invalid: {e}");
                     return ExitCode::FAILURE;
                 }
                 println!("Configuration is valid.");
@@ -277,11 +286,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| format!("Failed to bind to {}: {}", addr, e))?;
 
-    let server_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown.clone().cancelled_owned())
-            .await
-    });
+    let server_handle = match cfg.server.tls.material() {
+        Some((cert_path, key_path)) => {
+            let initial = tls::load_certified_key(cert_path, key_path)
+                .map_err(|e| format!("Failed to load TLS material: {e}"))?;
+            let resolver = Arc::new(tls::ReloadableCertResolver::new(initial));
+            let server_config = Arc::new(
+                tls::build_server_config(resolver.clone())
+                    .map_err(|e| format!("Failed to build TLS configuration: {e}"))?,
+            );
+            tls::spawn_reload_handler(
+                resolver,
+                cert_path.to_string(),
+                key_path.to_string(),
+                shutdown.clone(),
+            );
+            info!("TLS termination enabled (h2, http/1.1), reload with SIGHUP");
+            let shutdown = shutdown.clone();
+            tokio::spawn(tls::serve_tls(listener, app, server_config, shutdown))
+        }
+        None => {
+            let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                axum::serve(listener, make_service)
+                    .with_graceful_shutdown(shutdown.cancelled_owned())
+                    .await
+            })
+        }
+    };
 
     if let Some((sender, app_id, webhook_url)) = deferred_discord_endpoint {
         tokio::spawn(async move {

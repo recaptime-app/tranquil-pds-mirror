@@ -251,8 +251,7 @@ impl AppState {
             }
         };
 
-        if cfg.server.invite_code_required
-            && state.repos.user.count_users().await.unwrap_or(1) == 0
+        if cfg.server.invite_code_required && state.repos.user.count_users().await.unwrap_or(1) == 0
         {
             let code = crate::util::gen_invite_code();
             tracing::info!(

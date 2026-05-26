@@ -255,6 +255,9 @@ impl TranquilConfig {
             }
         }
 
+        // -- tls --------------------------------------------------------------
+        self.server.tls.validate(&mut errors);
+
         // -- SSO providers ----------------------------------------------------
         self.validate_sso_provider("sso.github", &self.sso.github, &mut errors);
         self.validate_sso_provider("sso.google", &self.sso.google, &mut errors);
@@ -481,6 +484,52 @@ pub struct ServerConfig {
     /// Maximum allowed number of preferences
     #[config(env = "MAX_PREFERENCES_COUNT", default = 1000)]
     pub max_preferences_count: usize,
+
+    /// If you're not altering TLS config, you don't have to worry about this.
+    /// This is the number of trusted reverse proxies in front of Tranquil.
+    /// We read the client IP used for rate limiting and device records this many hops
+    /// from the right of the X-Forwarded-For header.
+    /// When left unset, Tranquil will assume:
+    /// - 0, if the TLS termination is happening here on Tranquil via the TLS config
+    /// - 1, if the TLS termination *isn't* happening here.
+    #[config(env = "TRUSTED_PROXY_COUNT")]
+    pub trusted_proxy_count: Option<usize>,
+
+    #[config(nested)]
+    pub tls: TlsConfig,
+}
+
+#[derive(Debug, Config)]
+pub struct TlsConfig {
+    /// The path to the TLS cert chain.
+    /// If you set both this and `key_path`, the server terminates TLS itself rather than expecting
+    /// a reverse proxy to do it. The certificate and key reload on SIGHUP.
+    #[config(env = "TLS_CERT_PATH")]
+    pub cert_path: Option<String>,
+
+    /// Path to the TLS private key.
+    #[config(env = "TLS_KEY_PATH")]
+    pub key_path: Option<String>,
+}
+
+impl TlsConfig {
+    /// The certificate and key paths when both are configured.
+    pub fn material(&self) -> Option<(&str, &str)> {
+        match (self.cert_path.as_deref(), self.key_path.as_deref()) {
+            (Some(cert), Some(key)) => Some((cert, key)),
+            _ => None,
+        }
+    }
+
+    pub fn validate(&self, errors: &mut Vec<String>) {
+        if self.cert_path.is_some() != self.key_path.is_some() {
+            errors.push(
+                "server.tls.cert_path (TLS_CERT_PATH) and server.tls.key_path (TLS_KEY_PATH) \
+                 must both be set to enable app-level TLS, or both be unset"
+                    .to_string(),
+            );
+        }
+    }
 }
 
 impl ServerConfig {
@@ -1622,6 +1671,42 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.contains("dkim.selector")),
             "expected dkim.selector error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn tls_validate_accepts_both_paths_unset() {
+        let mut errors = Vec::new();
+        TlsConfig {
+            cert_path: None,
+            key_path: None,
+        }
+        .validate(&mut errors);
+        assert!(errors.is_empty(), "expected no errors, got {errors:?}");
+    }
+
+    #[test]
+    fn tls_validate_accepts_both_paths_set() {
+        let mut errors = Vec::new();
+        TlsConfig {
+            cert_path: Some("/etc/tranquil/cert.pem".to_string()),
+            key_path: Some("/etc/tranquil/key.pem".to_string()),
+        }
+        .validate(&mut errors);
+        assert!(errors.is_empty(), "expected no errors, got {errors:?}");
+    }
+
+    #[test]
+    fn tls_validate_rejects_cert_without_key() {
+        let mut errors = Vec::new();
+        TlsConfig {
+            cert_path: Some("/etc/tranquil/cert.pem".to_string()),
+            key_path: None,
+        }
+        .validate(&mut errors);
+        assert!(
+            errors.iter().any(|e| e.contains("server.tls")),
+            "expected server.tls error, got {errors:?}"
         );
     }
 

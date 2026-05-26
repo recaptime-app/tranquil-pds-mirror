@@ -310,6 +310,7 @@ pub async fn authorize_post(
     State(state): State<AppState>,
     _rate_limit: OAuthRateLimited<OAuthAuthorizeLimit>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     Json(form): Json<AuthorizeSubmit>,
 ) -> Response {
     let json_response = wants_json(&headers);
@@ -616,7 +617,7 @@ pub async fn authorize_post(
             let device_data = DeviceData {
                 session_id: SessionId::generate(),
                 user_agent: extract_user_agent(&headers),
-                ip_address: extract_client_ip(&headers, None),
+                ip_address: client_ip.into_string(),
                 last_seen_at: Utc::now(),
             };
             if state
