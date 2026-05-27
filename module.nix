@@ -189,7 +189,14 @@ in
             });
 
         environment.etc = {
-          "tranquil-pds/config.toml".source = settingsFormat.generate "tranquil-pds.toml" cfg.settings;
+          "tranquil-pds/config.toml".source =
+            let
+              conf = settingsFormat.generate "tranquil-pds.toml" cfg.settings;
+            in
+            pkgs.runCommandLocal "validated-tranquil-config" { nativeBuildInputs = [ cfg.package ]; } ''
+              tranquil-server --config ${conf} validate --ignore-secrets
+              ln -s ${conf} $out
+            '';
         };
 
         systemd.services.tranquil-pds = {
