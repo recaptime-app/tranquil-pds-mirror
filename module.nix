@@ -120,6 +120,14 @@ in
               description = "Directory for storing blobs";
             };
           };
+
+          tranquil_store = {
+            data_dir = mkOption {
+              type = types.path;
+              default = "/var/lib/tranquil-pds/store";
+              description = "Directory for tranquil-store files";
+            };
+          };
         };
       };
 
@@ -165,11 +173,13 @@ in
 
         users.groups.${cfg.group} = { };
 
+        # TODO: probably should split these out so only the directories that are actually used made and configured
         systemd.tmpfiles.settings."tranquil-pds" =
           lib.genAttrs
             [
               cfg.dataDir
               cfg.settings.storage.path
+              cfg.settings.tranquil_store.data_dir
             ]
             (_: {
               d = {
