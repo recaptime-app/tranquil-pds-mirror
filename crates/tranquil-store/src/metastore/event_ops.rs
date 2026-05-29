@@ -41,10 +41,6 @@ impl<S: StorageIO + 'static> EventOps<S> {
         self.bridge.notifier()
     }
 
-    pub fn notify_update(&self, _seq: SequenceNumber) -> Result<(), DbError> {
-        Ok(())
-    }
-
     pub fn insert_commit_event(&self, data: &CommitEventData) -> Result<SequenceNumber, DbError> {
         let event = Self::build_commit_event(data);
         self.append_and_index(&event, &data.did, data.rev.as_deref())
@@ -380,6 +376,33 @@ impl<S: StorageIO + 'static> EventOps<S> {
         batch.commit().map_err(fjall_to_db)?;
 
         Ok(())
+    }
+
+    pub fn purge_did_events_keeping_latest(&self, did: &Did) -> Result<(), DbError> {
+        let user_hash = UserHash::from_did(did.as_str());
+        let prefix = did_events_prefix(user_hash);
+        let upper = exclusive_upper_bound(prefix.as_slice())
+            .expect("did_events prefix can never be all-0xFF");
+
+        let latest = self
+            .repo_data
+            .range(prefix.as_slice()..upper.as_slice())
+            .map(|guard| {
+                let (key, _) = guard.into_inner().map_err(fjall_to_db)?;
+                decode_did_events_seq(key.as_ref())
+            })
+            .collect::<Result<Vec<u64>, DbError>>()?
+            .into_iter()
+            .max();
+
+        match latest {
+            Some(seq) => {
+                let keep = i64::try_from(seq)
+                    .map_err(|_| DbError::Query("sequence number out of range".to_owned()))?;
+                self.delete_sequences_except(did, SequenceNumber::from_raw(keep))
+            }
+            None => Ok(()),
+        }
     }
 
     pub fn read_last_applied_cursor(&self) -> Result<Option<u64>, DbError> {

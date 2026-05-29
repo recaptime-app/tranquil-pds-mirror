@@ -319,7 +319,6 @@ pub struct ApplyCommitInput {
 
 #[derive(Debug, Clone)]
 pub struct ApplyCommitResult {
-    pub seq: i64,
     pub is_account_active: bool,
 }
 
@@ -445,19 +444,15 @@ pub trait RepoRepository: Send + Sync {
 
     async fn count_user_blocks(&self, user_id: Uuid) -> Result<i64, DbError>;
 
-    async fn insert_commit_event(&self, data: &CommitEventData) -> Result<SequenceNumber, DbError>;
+    async fn insert_commit_event(&self, data: &CommitEventData) -> Result<(), DbError>;
 
     async fn insert_identity_event(
         &self,
         did: &Did,
         handle: Option<&Handle>,
-    ) -> Result<SequenceNumber, DbError>;
+    ) -> Result<(), DbError>;
 
-    async fn insert_account_event(
-        &self,
-        did: &Did,
-        status: AccountStatus,
-    ) -> Result<SequenceNumber, DbError>;
+    async fn insert_account_event(&self, did: &Did, status: AccountStatus) -> Result<(), DbError>;
 
     async fn insert_sync_event(
         &self,
@@ -465,7 +460,7 @@ pub trait RepoRepository: Send + Sync {
         commit_cid: &CidLink,
         rev: Option<&str>,
         commit_bytes: &[u8],
-    ) -> Result<SequenceNumber, DbError>;
+    ) -> Result<(), DbError>;
 
     async fn insert_genesis_commit_event(
         &self,
@@ -475,13 +470,17 @@ pub trait RepoRepository: Send + Sync {
         rev: &str,
         commit_bytes: &[u8],
         mst_root_bytes: &[u8],
-    ) -> Result<SequenceNumber, DbError>;
-
-    async fn delete_sequences_except(
-        &self,
-        did: &Did,
-        keep_seq: SequenceNumber,
     ) -> Result<(), DbError>;
+
+    async fn purge_did_events_keeping_latest(&self, did: &Did) -> Result<(), DbError>;
+
+    async fn assign_pending_sequences(&self) -> Result<u64, DbError> {
+        Ok(0)
+    }
+
+    async fn flush_pending_sequences(&self) -> Result<(), DbError> {
+        Ok(())
+    }
 
     async fn prune_events_older_than(&self, cutoff: DateTime<Utc>) -> Result<PruneCount, DbError>;
 
@@ -526,8 +525,6 @@ pub trait RepoRepository: Send + Sync {
     async fn get_repo_root_cid_by_user_id(&self, user_id: Uuid)
     -> Result<Option<CidLink>, DbError>;
 
-    async fn notify_update(&self, seq: SequenceNumber) -> Result<(), DbError>;
-
     async fn import_repo_data(
         &self,
         user_id: Uuid,
@@ -563,5 +560,5 @@ pub trait RepoEventNotifier: Send + Sync {
 
 #[async_trait]
 pub trait RepoEventReceiver: Send {
-    async fn recv(&mut self) -> Option<i64>;
+    async fn recv(&mut self) -> Option<()>;
 }

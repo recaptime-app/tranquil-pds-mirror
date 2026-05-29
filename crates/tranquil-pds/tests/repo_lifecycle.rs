@@ -59,7 +59,7 @@ async fn test_create_record_cid_matches_firehose() {
     let (token, did) = create_account_and_login(&client).await;
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -134,7 +134,7 @@ async fn test_update_record_prev_matches_old_cid() {
     let v1_cid = Cid::from_str(v1_cid_str).unwrap();
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -203,7 +203,7 @@ async fn test_delete_record_prev_set_cid_none() {
     let rkey = parts[parts.len() - 1];
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -246,7 +246,7 @@ async fn test_five_record_commit_chain_integrity() {
     let (token, did) = create_account_and_login(&client).await;
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -315,7 +315,7 @@ async fn test_apply_writes_single_commit_multiple_ops() {
     let (token, did) = create_account_and_login(&client).await;
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -396,7 +396,7 @@ async fn test_firehose_commit_signature_verification() {
     };
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -444,7 +444,7 @@ async fn test_cursor_backfill_completeness() {
     let (token, did) = create_account_and_login(&client).await;
 
     let repos = get_test_repos().await;
-    let baseline_seq = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let baseline_seq = flushed_max_seq(repos).await.as_i64();
 
     let mut expected_cids: Vec<String> = Vec::with_capacity(5);
     let texts = [
@@ -496,7 +496,7 @@ async fn test_multi_account_seq_interleaving() {
     let (bob_token, bob_did) = create_account_and_login(&client).await;
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 

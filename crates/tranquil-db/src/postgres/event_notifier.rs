@@ -35,9 +35,9 @@ pub struct PostgresRepoEventReceiver {
 
 #[async_trait]
 impl RepoEventReceiver for PostgresRepoEventReceiver {
-    async fn recv(&mut self) -> Option<i64> {
+    async fn recv(&mut self) -> Option<()> {
         match self.listener.recv().await {
-            Ok(notification) => notification.payload().parse().ok(),
+            Ok(_) => Some(()),
             Err(_) => None,
         }
     }

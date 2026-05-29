@@ -223,7 +223,7 @@ async fn websocket_firehose_frames_pass_inductive_forward_and_inverse() {
     let (token, did) = create_account_and_login(&client).await;
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -298,7 +298,7 @@ async fn websocket_firehose_car_root_matches_commit_cid() {
     let (token, did) = create_account_and_login(&client).await;
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -340,7 +340,7 @@ async fn websocket_firehose_resumption_from_cursor_yields_valid_frames() {
         create_record(&client, &token, &did, &rkey_for(i), "pre").await;
     }
 
-    let resume_cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let resume_cursor = flushed_max_seq(repos).await.as_i64();
 
     for i in 5..12 {
         create_record(&client, &token, &did, &rkey_for(i), "post").await;
@@ -371,7 +371,7 @@ async fn websocket_firehose_ops_include_prev_field_for_update_delete() {
     let client = client();
     let (token, did) = create_account_and_login(&client).await;
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -417,7 +417,7 @@ async fn websocket_firehose_rebuild_new_mst_from_car_matches_commit_data() {
     let client = client();
     let (token, did) = create_account_and_login(&client).await;
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 

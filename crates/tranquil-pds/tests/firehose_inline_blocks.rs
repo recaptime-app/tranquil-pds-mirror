@@ -66,6 +66,11 @@ async fn commit_events_carry_inline_blocks() {
     let repos = get_test_repos().await;
     let typed_did = tranquil_types::Did::new(did.clone()).unwrap();
 
+    repos
+        .repo
+        .flush_pending_sequences()
+        .await
+        .expect("flush_pending_sequences");
     let events = repos
         .repo
         .get_events_since_seq(SequenceNumber::ZERO, None)
@@ -142,18 +147,14 @@ async fn sync_event_carries_inline_commit_block() {
     let cid_link: CidLink = (&commit_cid).into();
     let rev = "3kabcdefghij2";
 
-    let seq = repos
+    let baseline = repos.repo.get_max_seq().await.expect("get_max_seq");
+    repos
         .repo
         .insert_sync_event(&did, &cid_link, Some(rev), &commit_bytes)
         .await
         .expect("insert_sync_event");
 
-    let event = repos
-        .repo
-        .get_event_by_seq(seq)
-        .await
-        .expect("get_event_by_seq")
-        .expect("event present");
+    let event = sequenced_event_for_did(repos, baseline, &did).await;
 
     assert_eq!(event.event_type, RepoEventType::Sync);
     let blocks = event
@@ -193,7 +194,8 @@ async fn genesis_commit_event_carries_inline_blocks() {
     let mst_link: CidLink = (&mst_root_cid).into();
     let rev = "3kabcdefghij3";
 
-    let seq = repos
+    let baseline = repos.repo.get_max_seq().await.expect("get_max_seq");
+    repos
         .repo
         .insert_genesis_commit_event(
             &did,
@@ -206,12 +208,7 @@ async fn genesis_commit_event_carries_inline_blocks() {
         .await
         .expect("insert_genesis_commit_event");
 
-    let event = repos
-        .repo
-        .get_event_by_seq(seq)
-        .await
-        .expect("get_event_by_seq")
-        .expect("event present");
+    let event = sequenced_event_for_did(repos, baseline, &did).await;
 
     assert_eq!(event.event_type, RepoEventType::Commit);
     let blocks = event
@@ -329,6 +326,11 @@ async fn import_event_carries_inline_commit_block() {
 
     let repos = get_test_repos().await;
     let typed_did = tranquil_types::Did::new(did.clone()).unwrap();
+    repos
+        .repo
+        .flush_pending_sequences()
+        .await
+        .expect("flush_pending_sequences");
     let events = repos
         .repo
         .get_events_since_seq(SequenceNumber::ZERO, None)

@@ -405,13 +405,9 @@ fn sim_crash_recovery_cursor_tracks_last_durable_commit() {
                             ),
                         };
 
-                        let result = h.apply_commit(input).unwrap_or_else(|e| {
+                        h.apply_commit(input).unwrap_or_else(|e| {
                             panic!("seed={seed} commit {commit_idx}: {e:?}")
                         });
-                        assert!(
-                            result.seq > 0,
-                            "seed={seed} commit {commit_idx} seq must be positive"
-                        );
 
                         let new_persisted = match commit_idx <= crash_after {
                             true => {
@@ -689,12 +685,7 @@ fn sim_handler_pool_shutdown_with_inflight_commits() {
         receivers.into_iter().for_each(|(idx, rx)| {
             let result = rt.block_on(rx);
             match result {
-                Ok(Ok(commit_result)) => {
-                    assert!(
-                        commit_result.seq > 0,
-                        "seed={seed} idx={idx} commit seq must be positive"
-                    );
-                }
+                Ok(Ok(_commit_result)) => {}
                 Ok(Err(e)) => {
                     panic!("seed={seed} idx={idx} commit failed: {e:?}");
                 }

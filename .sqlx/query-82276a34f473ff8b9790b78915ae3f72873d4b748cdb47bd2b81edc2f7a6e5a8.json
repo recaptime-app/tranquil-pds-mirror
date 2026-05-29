@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO repo_seq (did, event_type, commit_cid, prev_cid, ops, blobs, block_cids, block_data, prev_data_cid, rev)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "TextArray",
+        "ByteaArray",
+        "ByteaArray",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "82276a34f473ff8b9790b78915ae3f72873d4b748cdb47bd2b81edc2f7a6e5a8"
+}

@@ -19,7 +19,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::OwnedMutexGuard;
 use tracing::{error, warn};
-use tranquil_db_traits::SequenceNumber;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -776,7 +775,7 @@ pub async fn sequence_identity_event(
     state: &AppState,
     did: &Did,
     handle: Option<&Handle>,
-) -> Result<SequenceNumber, CommitError> {
+) -> Result<(), CommitError> {
     state
         .repos
         .repo
@@ -788,7 +787,7 @@ pub async fn sequence_account_event(
     state: &AppState,
     did: &Did,
     status: tranquil_db_traits::AccountStatus,
-) -> Result<SequenceNumber, CommitError> {
+) -> Result<(), CommitError> {
     state
         .repos
         .repo
@@ -801,7 +800,7 @@ pub async fn sequence_sync_event(
     did: &Did,
     commit_cid: &str,
     rev: Option<&str>,
-) -> Result<SequenceNumber, CommitError> {
+) -> Result<(), CommitError> {
     let cid_link: crate::types::CidLink = commit_cid
         .parse()
         .map_err(|_| CommitError::InvalidCid(commit_cid.to_string()))?;
@@ -829,7 +828,7 @@ pub async fn sequence_genesis_commit(
     commit_cid: &Cid,
     mst_root_cid: &Cid,
     rev: &str,
-) -> Result<SequenceNumber, CommitError> {
+) -> Result<(), CommitError> {
     let commit_cid_link = crate::types::CidLink::from(commit_cid);
     let mst_root_cid_link = crate::types::CidLink::from(mst_root_cid);
     let commit_bytes = state

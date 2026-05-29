@@ -551,7 +551,7 @@ pub trait UserRepository: Send + Sync {
         limit: i64,
     ) -> Result<Vec<ScheduledDeletionAccount>, DbError>;
 
-    async fn delete_account_with_firehose(&self, user_id: Uuid, did: &Did) -> Result<i64, DbError>;
+    async fn delete_account_with_firehose(&self, user_id: Uuid, did: &Did) -> Result<(), DbError>;
 
     async fn create_password_account(
         &self,

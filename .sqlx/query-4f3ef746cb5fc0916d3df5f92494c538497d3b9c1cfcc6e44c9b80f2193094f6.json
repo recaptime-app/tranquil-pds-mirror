@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO repo_seq (did, event_type, handle)\n            VALUES ($1, 'identity', $2)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4f3ef746cb5fc0916d3df5f92494c538497d3b9c1cfcc6e44c9b80f2193094f6"
+}

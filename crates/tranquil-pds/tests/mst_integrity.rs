@@ -216,6 +216,11 @@ async fn imported_repo_emits_commit_event_with_valid_car() {
 
     let repos = get_test_repos().await;
     let typed_did = Did::new(did.clone()).unwrap();
+    repos
+        .repo
+        .flush_pending_sequences()
+        .await
+        .expect("flush_pending_sequences");
     let events = repos
         .repo
         .get_events_since_seq(SequenceNumber::ZERO, None)
@@ -253,7 +258,7 @@ async fn firehose_commit_block_bytes_roundtrip_to_same_cid() {
     let (token, did) = create_account_and_login(&client).await;
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -284,7 +289,7 @@ async fn firehose_commit_car_contains_new_record_bytes_for_every_create() {
     let (token, did) = create_account_and_login(&client).await;
 
     let repos = get_test_repos().await;
-    let cursor = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let cursor = flushed_max_seq(repos).await.as_i64();
     let consumer = FirehoseConsumer::connect_with_cursor(app_port(), cursor).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 

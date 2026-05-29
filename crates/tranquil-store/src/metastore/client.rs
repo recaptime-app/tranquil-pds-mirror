@@ -474,21 +474,21 @@ impl<S: StorageIO + 'static> tranquil_db_traits::RepoRepository for MetastoreCli
         recv(rx).await
     }
 
-    async fn insert_commit_event(&self, data: &CommitEventData) -> Result<SequenceNumber, DbError> {
+    async fn insert_commit_event(&self, data: &CommitEventData) -> Result<(), DbError> {
         let (tx, rx) = oneshot::channel();
         self.pool
             .send(MetastoreRequest::Event(EventRequest::InsertCommitEvent {
                 data: data.clone(),
                 tx,
             }))?;
-        recv(rx).await
+        recv(rx).await.map(|_: SequenceNumber| ())
     }
 
     async fn insert_identity_event(
         &self,
         did: &Did,
         handle: Option<&Handle>,
-    ) -> Result<SequenceNumber, DbError> {
+    ) -> Result<(), DbError> {
         let (tx, rx) = oneshot::channel();
         self.pool
             .send(MetastoreRequest::Event(EventRequest::InsertIdentityEvent {
@@ -496,14 +496,10 @@ impl<S: StorageIO + 'static> tranquil_db_traits::RepoRepository for MetastoreCli
                 handle: handle.cloned(),
                 tx,
             }))?;
-        recv(rx).await
+        recv(rx).await.map(|_: SequenceNumber| ())
     }
 
-    async fn insert_account_event(
-        &self,
-        did: &Did,
-        status: AccountStatus,
-    ) -> Result<SequenceNumber, DbError> {
+    async fn insert_account_event(&self, did: &Did, status: AccountStatus) -> Result<(), DbError> {
         let (tx, rx) = oneshot::channel();
         self.pool
             .send(MetastoreRequest::Event(EventRequest::InsertAccountEvent {
@@ -511,7 +507,7 @@ impl<S: StorageIO + 'static> tranquil_db_traits::RepoRepository for MetastoreCli
                 status,
                 tx,
             }))?;
-        recv(rx).await
+        recv(rx).await.map(|_: SequenceNumber| ())
     }
 
     async fn insert_sync_event(
@@ -520,7 +516,7 @@ impl<S: StorageIO + 'static> tranquil_db_traits::RepoRepository for MetastoreCli
         commit_cid: &CidLink,
         rev: Option<&str>,
         commit_bytes: &[u8],
-    ) -> Result<SequenceNumber, DbError> {
+    ) -> Result<(), DbError> {
         let (tx, rx) = oneshot::channel();
         self.pool
             .send(MetastoreRequest::Event(EventRequest::InsertSyncEvent {
@@ -530,7 +526,7 @@ impl<S: StorageIO + 'static> tranquil_db_traits::RepoRepository for MetastoreCli
                 commit_bytes: commit_bytes.to_vec(),
                 tx,
             }))?;
-        recv(rx).await
+        recv(rx).await.map(|_: SequenceNumber| ())
     }
 
     async fn insert_genesis_commit_event(
@@ -541,7 +537,7 @@ impl<S: StorageIO + 'static> tranquil_db_traits::RepoRepository for MetastoreCli
         rev: &str,
         commit_bytes: &[u8],
         mst_root_bytes: &[u8],
-    ) -> Result<SequenceNumber, DbError> {
+    ) -> Result<(), DbError> {
         let (tx, rx) = oneshot::channel();
         self.pool.send(MetastoreRequest::Event(
             EventRequest::InsertGenesisCommitEvent {
@@ -554,19 +550,14 @@ impl<S: StorageIO + 'static> tranquil_db_traits::RepoRepository for MetastoreCli
                 tx,
             },
         ))?;
-        recv(rx).await
+        recv(rx).await.map(|_: SequenceNumber| ())
     }
 
-    async fn delete_sequences_except(
-        &self,
-        did: &Did,
-        keep_seq: SequenceNumber,
-    ) -> Result<(), DbError> {
+    async fn purge_did_events_keeping_latest(&self, did: &Did) -> Result<(), DbError> {
         let (tx, rx) = oneshot::channel();
         self.pool.send(MetastoreRequest::Event(
-            EventRequest::DeleteSequencesExcept {
+            EventRequest::PurgeDidEventsKeepingLatest {
                 did: did.clone(),
-                keep_seq,
                 tx,
             },
         ))?;
@@ -710,16 +701,6 @@ impl<S: StorageIO + 'static> tranquil_db_traits::RepoRepository for MetastoreCli
         self.pool.send(MetastoreRequest::Repo(
             RepoRequest::GetRepoRootCidByUserId { user_id, tx },
         ))?;
-        recv(rx).await
-    }
-
-    async fn notify_update(&self, seq: SequenceNumber) -> Result<(), DbError> {
-        let (tx, rx) = oneshot::channel();
-        self.pool
-            .send(MetastoreRequest::Event(EventRequest::NotifyUpdate {
-                seq,
-                tx,
-            }))?;
         recv(rx).await
     }
 
@@ -4898,7 +4879,7 @@ impl<S: StorageIO + 'static> tranquil_db_traits::UserRepository for MetastoreCli
         recv(rx).await
     }
 
-    async fn delete_account_with_firehose(&self, user_id: Uuid, did: &Did) -> Result<i64, DbError> {
+    async fn delete_account_with_firehose(&self, user_id: Uuid, did: &Did) -> Result<(), DbError> {
         let (tx, rx) = oneshot::channel();
         self.pool.send(MetastoreRequest::User(
             UserRequest::DeleteAccountWithFirehose {

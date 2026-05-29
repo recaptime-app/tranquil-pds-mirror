@@ -711,7 +711,7 @@ async fn delete_account_data(
         warn!(storage_key = %key, error = %e, "Failed to delete blob from storage (continuing anyway)");
     });
 
-    let _account_seq = user_repo
+    user_repo
         .delete_account_with_firehose(user_id, did)
         .await
         .context("Failed to delete account")?;

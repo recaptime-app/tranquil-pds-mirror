@@ -245,7 +245,7 @@ impl<S: StorageIO + 'static> CommitOps<S> {
             .serialize()
             .map_err(|e| ApplyCommitError::Database(e.to_string()))?;
 
-        let (seq, deferred) = self
+        let (_seq, deferred) = self
             .event_ops
             .append_commit_event_into_batch(
                 &mut batch,
@@ -261,7 +261,6 @@ impl<S: StorageIO + 'static> CommitOps<S> {
         self.event_ops.complete_broadcast(deferred);
 
         Ok(ApplyCommitResult {
-            seq: seq.as_i64(),
             is_account_active: is_active,
         })
     }
@@ -477,7 +476,7 @@ mod tests {
     use crate::eventlog::{EventLog, EventLogConfig};
     use crate::io::RealIO;
     use crate::metastore::{Metastore, MetastoreConfig};
-    use tranquil_db_traits::{CommitEventData, RepoEventType, SequenceNumber};
+    use tranquil_db_traits::{CommitEventData, RepoEventType};
     use tranquil_types::{Handle, Nsid, Rkey};
 
     struct TestHarness {
@@ -599,7 +598,6 @@ mod tests {
         };
 
         let result = ops.apply_commit(input).unwrap();
-        assert!(result.seq > 0);
         assert!(result.is_account_active);
 
         let repo = h.metastore.repo_ops().get_repo(user_id).unwrap().unwrap();
@@ -812,8 +810,8 @@ mod tests {
             },
         };
 
-        let result = ops.apply_commit(input).unwrap();
-        let seq = SequenceNumber::from_raw(result.seq);
+        ops.apply_commit(input).unwrap();
+        let seq = ops.event_ops.get_max_seq();
 
         let event = ops.event_ops.get_event_by_seq(seq).unwrap().unwrap();
         assert_eq!(event.did, did);
@@ -954,8 +952,7 @@ mod tests {
             },
         };
 
-        let result = ops.apply_commit(input).unwrap();
-        assert!(result.seq > 0);
+        ops.apply_commit(input).unwrap();
     }
 
     #[test]
@@ -1144,8 +1141,7 @@ mod tests {
                 },
             };
 
-            let result = ops.apply_commit(input).unwrap();
-            assert!(result.seq > 0);
+            ops.apply_commit(input).unwrap();
             metastore.persist().unwrap();
         }
 

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM repo_seq\n            WHERE did = $1\n              AND id <> (SELECT id FROM repo_seq WHERE did = $1 ORDER BY id DESC LIMIT 1)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "122d79e006c0e11214e3cf11cfb98bdff6fbf156893b482572532ebcd8979e61"
+}

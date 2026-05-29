@@ -417,7 +417,6 @@ async fn sequence_import_event(
         rev: None,
     };
 
-    let seq = state.repos.repo.insert_commit_event(&data).await?;
-    state.repos.repo.notify_update(seq).await?;
+    state.repos.repo.insert_commit_event(&data).await?;
     Ok(())
 }

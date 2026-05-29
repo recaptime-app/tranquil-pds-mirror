@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "NOTIFY repo_updates",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d4eacb9bca838dd18dcfd8ca39b83ef50968bfaaabc213536c049cc222ffe9c8"
+}

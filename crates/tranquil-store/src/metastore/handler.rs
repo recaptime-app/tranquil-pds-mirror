@@ -362,9 +362,8 @@ pub enum EventRequest {
         mst_root_bytes: Vec<u8>,
         tx: Tx<SequenceNumber>,
     },
-    DeleteSequencesExcept {
+    PurgeDidEventsKeepingLatest {
         did: Did,
-        keep_seq: SequenceNumber,
         tx: Tx<()>,
     },
     GetMaxSeq {
@@ -393,10 +392,6 @@ pub enum EventRequest {
         limit: i64,
         tx: Tx<Vec<SequencedEvent>>,
     },
-    NotifyUpdate {
-        seq: SequenceNumber,
-        tx: Tx<()>,
-    },
 }
 
 impl EventRequest {
@@ -409,7 +404,7 @@ impl EventRequest {
             | Self::InsertAccountEvent { did, .. }
             | Self::InsertSyncEvent { did, .. }
             | Self::InsertGenesisCommitEvent { did, .. }
-            | Self::DeleteSequencesExcept { did, .. } => {
+            | Self::PurgeDidEventsKeepingLatest { did, .. } => {
                 Routing::Sharded(UserHash::from_did(did.as_str()).raw())
             }
             Self::GetMaxSeq { .. }
@@ -417,8 +412,7 @@ impl EventRequest {
             | Self::GetEventsSinceSeq { .. }
             | Self::GetEventsInSeqRange { .. }
             | Self::GetEventBySeq { .. }
-            | Self::GetEventsSinceCursor { .. }
-            | Self::NotifyUpdate { .. } => Routing::Global,
+            | Self::GetEventsSinceCursor { .. } => Routing::Global,
         }
     }
 }
@@ -1513,7 +1507,7 @@ pub enum UserRequest {
     DeleteAccountWithFirehose {
         user_id: Uuid,
         did: Did,
-        tx: Tx<i64>,
+        tx: Tx<()>,
     },
     CreatePasswordAccount {
         input: CreatePasswordAccountInput,
@@ -2967,8 +2961,8 @@ fn dispatch_event<S: StorageIO + 'static>(state: &HandlerState<S>, req: EventReq
             );
             let _ = tx.send(result);
         }
-        EventRequest::DeleteSequencesExcept { did, keep_seq, tx } => {
-            let result = state.event_ops.delete_sequences_except(&did, keep_seq);
+        EventRequest::PurgeDidEventsKeepingLatest { did, tx } => {
+            let result = state.event_ops.purge_did_events_keeping_latest(&did);
             let _ = tx.send(result);
         }
         EventRequest::GetMaxSeq { tx } => {
@@ -2996,9 +2990,6 @@ fn dispatch_event<S: StorageIO + 'static>(state: &HandlerState<S>, req: EventReq
         }
         EventRequest::GetEventsSinceCursor { cursor, limit, tx } => {
             let _ = tx.send(state.event_ops.get_events_since_cursor(cursor, limit));
-        }
-        EventRequest::NotifyUpdate { seq, tx } => {
-            let _ = tx.send(state.event_ops.notify_update(seq));
         }
     }
 }
@@ -5804,7 +5795,7 @@ fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserReque
                         .event_ops
                         .insert_account_event(&did, AccountStatus::Deleted)
                 });
-            let _ = tx.send(result.map(|seq| seq.as_i64()));
+            let _ = tx.send(result.map(|_| ()));
         }
         UserRequest::CreatePasswordAccount { input, tx } => {
             let result = user.create_password_account(&input).and_then(|result| {

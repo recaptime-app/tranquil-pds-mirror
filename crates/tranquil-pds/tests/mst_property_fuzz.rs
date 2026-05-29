@@ -267,6 +267,11 @@ async fn fuzz_run_with_seed(seed: u64, steps: usize) -> Vec<String> {
 
     let repos = get_test_repos().await;
     let typed_did = Did::new(did.clone()).unwrap();
+    repos
+        .repo
+        .flush_pending_sequences()
+        .await
+        .expect("flush_pending_sequences");
     let events = repos
         .repo
         .get_events_since_seq(SequenceNumber::ZERO, None)

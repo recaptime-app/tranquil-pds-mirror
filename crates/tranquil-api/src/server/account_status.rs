@@ -665,27 +665,22 @@ pub async fn delete_account(
             error!("DB error deleting account: {:?}", e);
             ApiError::InternalError(None)
         })?;
-    let account_seq = tranquil_pds::repo_ops::sequence_account_event(
+    if let Err(e) = tranquil_pds::repo_ops::sequence_account_event(
         &state,
         did,
         tranquil_db_traits::AccountStatus::Deleted,
     )
-    .await;
-    match account_seq {
-        Ok(seq) => {
-            if let Err(e) = state.repos.repo.delete_sequences_except(did, seq).await {
-                warn!(
-                    "Failed to cleanup sequences for deleted account {}: {}",
-                    did, e
-                );
-            }
-        }
-        Err(e) => {
-            warn!(
-                "Failed to sequence account deletion event for {}: {}",
-                did, e
-            );
-        }
+    .await
+    {
+        warn!(
+            "Failed to sequence account deletion event for {}: {}",
+            did, e
+        );
+    } else if let Err(e) = state.repos.repo.purge_did_events_keeping_latest(did).await {
+        warn!(
+            "Failed to cleanup sequences for deleted account {}: {}",
+            did, e
+        );
     }
     let _ = state
         .cache

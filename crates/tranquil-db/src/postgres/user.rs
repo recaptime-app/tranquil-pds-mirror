@@ -2291,7 +2291,7 @@ impl UserRepository for PostgresUserRepository {
             .collect())
     }
 
-    async fn delete_account_with_firehose(&self, user_id: Uuid, did: &Did) -> Result<i64, DbError> {
+    async fn delete_account_with_firehose(&self, user_id: Uuid, did: &Did) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await.map_err(map_sqlx_error)?;
 
         sqlx::query!("DELETE FROM blobs WHERE created_by_user = $1", user_id)
@@ -2370,11 +2370,11 @@ impl UserRepository for PostgresUserRepository {
             .await
             .map_err(map_sqlx_error)?;
 
-        let account_seq: i64 = sqlx::query_scalar!(
+        let event_id: i64 = sqlx::query_scalar!(
             r#"
             INSERT INTO repo_seq (did, event_type, active, status)
             VALUES ($1, 'account', false, 'deleted')
-            RETURNING seq
+            RETURNING id
             "#,
             did.as_str()
         )
@@ -2383,9 +2383,9 @@ impl UserRepository for PostgresUserRepository {
         .map_err(map_sqlx_error)?;
 
         sqlx::query!(
-            "DELETE FROM repo_seq WHERE did = $1 AND seq != $2",
+            "DELETE FROM repo_seq WHERE did = $1 AND id <> $2",
             did.as_str(),
-            account_seq
+            event_id
         )
         .execute(&mut *tx)
         .await
@@ -2393,12 +2393,12 @@ impl UserRepository for PostgresUserRepository {
 
         tx.commit().await.map_err(map_sqlx_error)?;
 
-        sqlx::query(&format!("NOTIFY repo_updates, '{}'", account_seq))
+        sqlx::query!("NOTIFY repo_updates")
             .execute(&self.pool)
             .await
             .map_err(map_sqlx_error)?;
 
-        Ok(account_seq)
+        Ok(())
     }
 
     async fn create_password_account(

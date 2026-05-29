@@ -129,20 +129,13 @@ pub async fn submit_plc_operation(
     .await
     .map_err(ApiError::from)?;
 
-    match state
+    if let Err(e) = state
         .repos
         .repo
         .insert_identity_event(did, Some(&user.handle))
         .await
     {
-        Ok(seq) => {
-            if let Err(e) = state.repos.repo.notify_update(seq).await {
-                warn!("Failed to notify identity event: {:?}", e);
-            }
-        }
-        Err(e) => {
-            warn!("Failed to sequence identity event: {:?}", e);
-        }
+        warn!("Failed to sequence identity event: {:?}", e);
     }
     let _ = state
         .cache

@@ -801,7 +801,7 @@ async fn test_firehose_outdated_cursor_info() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let repos = get_test_repos().await;
-    let max_seq = repos.repo.get_max_seq().await.unwrap().as_i64();
+    let max_seq = flushed_max_seq(repos).await.as_i64();
     let outdated_cursor = (max_seq - 100).max(1);
     let url = format!(
         "ws://127.0.0.1:{}/xrpc/com.atproto.sync.subscribeRepos?cursor={}",

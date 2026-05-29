@@ -1628,10 +1628,12 @@ async fn parity_prune_events_older_than() {
         rev: Some("rev0".to_string()),
     };
 
-    let pg_seq = f.pg.repo.insert_commit_event(&event).await.unwrap();
-    let store_seq = f.store.repo.insert_commit_event(&event).await.unwrap();
-    assert!(pg_seq.as_i64() > 0);
-    assert!(store_seq.as_i64() > 0);
+    let baseline = f.pg.repo.get_max_seq().await.unwrap();
+    f.pg.repo.insert_commit_event(&event).await.unwrap();
+    f.store.repo.insert_commit_event(&event).await.unwrap();
+    let pg_seq = common::sequenced_event_for_did(&f.pg, baseline, &did)
+        .await
+        .seq;
 
     let past_cutoff = chrono::Utc::now() - chrono::Duration::hours(24);
     let pg_pruned_past =

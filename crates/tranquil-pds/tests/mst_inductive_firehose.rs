@@ -247,6 +247,11 @@ fn rkey_for(prefix: &str, i: usize) -> String {
 async fn our_commit_events(did: &str) -> Vec<SequencedEvent> {
     let repos = get_test_repos().await;
     let typed_did = Did::new(did.to_string()).unwrap();
+    repos
+        .repo
+        .flush_pending_sequences()
+        .await
+        .expect("flush_pending_sequences");
     let events = repos
         .repo
         .get_events_since_seq(SequenceNumber::ZERO, None)

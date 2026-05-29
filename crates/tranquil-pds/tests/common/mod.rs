@@ -921,6 +921,40 @@ pub async fn get_test_block_store() -> &'static tranquil_pds::repo::AnyBlockStor
         .expect("TEST_BLOCK_STORE not initialized")
 }
 
+#[allow(dead_code)]
+pub async fn flushed_max_seq(
+    repos: &tranquil_db::PostgresRepositories,
+) -> tranquil_db_traits::SequenceNumber {
+    repos
+        .repo
+        .flush_pending_sequences()
+        .await
+        .expect("flush_pending_sequences");
+    repos.repo.get_max_seq().await.expect("get_max_seq")
+}
+
+#[allow(dead_code)]
+pub async fn sequenced_event_for_did(
+    repos: &tranquil_db::PostgresRepositories,
+    baseline: tranquil_db_traits::SequenceNumber,
+    did: &tranquil_types::Did,
+) -> tranquil_db_traits::SequencedEvent {
+    repos
+        .repo
+        .flush_pending_sequences()
+        .await
+        .expect("flush_pending_sequences");
+    repos
+        .repo
+        .get_events_since_seq(baseline, None)
+        .await
+        .expect("get_events_since_seq")
+        .into_iter()
+        .filter(|event| &event.did == did)
+        .last()
+        .unwrap_or_else(|| panic!("event for did {did} not found after flush"))
+}
+
 fn extract_verification_code(body_text: &str) -> String {
     let lines: Vec<&str> = body_text.lines().collect();
     lines

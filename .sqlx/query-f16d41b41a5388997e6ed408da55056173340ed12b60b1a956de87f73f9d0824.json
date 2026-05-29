@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT seq, did, created_at, event_type as \"event_type: RepoEventType\", commit_cid, prev_cid, prev_data_cid,\n                      ops, blobs, block_cids, block_data, blocks_cids, handle, active, status, rev\n               FROM repo_seq\n               WHERE seq = $1",
+  "query": "SELECT seq as \"seq!\", did, created_at, event_type as \"event_type: RepoEventType\", commit_cid, prev_cid, prev_data_cid,\n                      ops, blobs, block_cids, block_data, blocks_cids, handle, active, status, rev\n               FROM repo_seq\n               WHERE seq > $1\n               ORDER BY seq ASC\n               LIMIT $2",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "seq",
+        "name": "seq!",
         "type_info": "Int8"
       },
       {
@@ -86,11 +86,12 @@
     ],
     "parameters": {
       "Left": [
+        "Int8",
         "Int8"
       ]
     },
     "nullable": [
-      false,
+      true,
       false,
       false,
       false,
@@ -108,5 +109,5 @@
       true
     ]
   },
-  "hash": "4702a94384ce938d3f5384bc2106a48500f8749134e6bfd1c619a9151f5d3772"
+  "hash": "f16d41b41a5388997e6ed408da55056173340ed12b60b1a956de87f73f9d0824"
 }

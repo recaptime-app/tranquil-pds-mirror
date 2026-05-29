@@ -30,7 +30,7 @@ struct EventLogEventReceiver<S: StorageIO> {
 
 #[async_trait]
 impl<S: StorageIO + 'static> RepoEventReceiver for EventLogEventReceiver<S> {
-    async fn recv(&mut self) -> Option<i64> {
-        self.subscriber.next().await.map(|event| event.seq.as_i64())
+    async fn recv(&mut self) -> Option<()> {
+        self.subscriber.next().await.map(|_| ())
     }
 }
