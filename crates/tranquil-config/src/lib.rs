@@ -502,6 +502,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Config)]
+#[config(layer_attr(serde(deny_unknown_fields)))]
 pub struct TlsConfig {
     /// The path to the TLS cert chain.
     /// If you set both this and `key_path`, the server terminates TLS itself rather than expecting
@@ -1638,10 +1639,8 @@ not_a_real_field = "oops"
 
     #[test]
     fn load_accepts_known_keys() {
-        let dir = std::env::temp_dir().join(format!(
-            "tranquil-config-known-keys-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("tranquil-config-known-keys-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir tempdir");
         let path = dir.join("config.toml");
         std::fs::write(

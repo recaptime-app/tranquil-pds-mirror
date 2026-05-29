@@ -6,7 +6,7 @@ RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm build
 
-FROM rust:1.92-alpine AS builder
+FROM rust:1.96-alpine AS builder
 RUN apk add --no-cache ca-certificates musl-dev pkgconfig openssl-dev openssl-libs-static mold clang protoc
 ENV RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=mold"
 WORKDIR /app
