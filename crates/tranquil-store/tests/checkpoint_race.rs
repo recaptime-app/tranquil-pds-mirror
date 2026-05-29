@@ -4,10 +4,10 @@ use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use tranquil_store::PostBlockstoreHook;
 use tranquil_store::blockstore::{
     BlockStoreConfig, BlocksSynced, CidBytes, GroupCommitConfig, TranquilBlockStore,
 };
+use tranquil_store::{PostBlockstoreHook, RealIO, SystemClock};
 
 struct SlowHook;
 
@@ -18,7 +18,7 @@ impl PostBlockstoreHook for SlowHook {
     }
 }
 
-fn refcount(store: &TranquilBlockStore, cid: &CidBytes) -> Option<u32> {
+fn refcount(store: &TranquilBlockStore<RealIO, SystemClock>, cid: &CidBytes) -> Option<u32> {
     store.block_index().get(cid).map(|e| e.refcount.raw())
 }
 

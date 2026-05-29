@@ -574,7 +574,10 @@ impl CompactionBlocklist {
 }
 
 fn run_compaction_pass(
-    store: &tranquil_store::blockstore::TranquilBlockStore,
+    store: &tranquil_store::blockstore::TranquilBlockStore<
+        tranquil_store::RealIO,
+        tranquil_store::SystemClock,
+    >,
     liveness_threshold: f64,
     grace_period_ms: u64,
     blocklist: &parking_lot::Mutex<CompactionBlocklist>,
@@ -836,7 +839,10 @@ fn cid_to_bytes(cid: &Cid) -> anyhow::Result<CidBytes> {
 }
 
 fn walk_repo_dag_sync(
-    store: &tranquil_store::blockstore::TranquilBlockStore,
+    store: &tranquil_store::blockstore::TranquilBlockStore<
+        tranquil_store::RealIO,
+        tranquil_store::SystemClock,
+    >,
     head_cid: &Cid,
     reachable: &mut std::collections::HashSet<CidBytes>,
     phantom_files: &mut std::collections::HashSet<tranquil_store::blockstore::DataFileId>,
@@ -960,7 +966,10 @@ fn paginate_repos(
 }
 
 pub fn run_reachability_walk(
-    store: &tranquil_store::blockstore::TranquilBlockStore,
+    store: &tranquil_store::blockstore::TranquilBlockStore<
+        tranquil_store::RealIO,
+        tranquil_store::SystemClock,
+    >,
     repo_repo: &dyn RepoRepository,
 ) -> anyhow::Result<ReachabilityResult> {
     let rt = tokio::runtime::Handle::current();

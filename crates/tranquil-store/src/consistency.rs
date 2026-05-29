@@ -5,8 +5,9 @@ use std::path::Path;
 use crate::blockstore::CID_SIZE;
 use crate::blockstore::hash_index::BlockIndex;
 use crate::blockstore::{DataFileId, TranquilBlockStore};
+use crate::clock::{Clock, SystemClock};
 use crate::eventlog::{EventLog, EventSequence, SequenceContiguityResult};
-use crate::io::StorageIO;
+use crate::io::{RealIO, StorageIO};
 use crate::metastore::Metastore;
 use crate::metastore::encoding::KeyBuilder;
 use crate::metastore::event_keys::metastore_cursor_key;
@@ -245,7 +246,7 @@ impl Default for ConsistencyCheckOptions {
 }
 
 pub fn verify_store_consistency<S: StorageIO + 'static>(
-    blockstore: &TranquilBlockStore,
+    blockstore: &TranquilBlockStore<RealIO, SystemClock>,
     metastore: &Metastore,
     eventlog: &EventLog<S>,
 ) -> ConsistencyReport {
@@ -258,7 +259,7 @@ pub fn verify_store_consistency<S: StorageIO + 'static>(
 }
 
 pub fn verify_store_consistency_with_options<S: StorageIO + 'static>(
-    blockstore: &TranquilBlockStore,
+    blockstore: &TranquilBlockStore<RealIO, SystemClock>,
     metastore: &Metastore,
     eventlog: &EventLog<S>,
     options: ConsistencyCheckOptions,
@@ -567,7 +568,7 @@ fn check_cursor_vs_eventlog<S: StorageIO + 'static>(
 }
 
 fn check_orphan_data_files(
-    blockstore: &TranquilBlockStore,
+    blockstore: &TranquilBlockStore<RealIO, SystemClock>,
     block_index: &BlockIndex,
     report: &mut ConsistencyReport,
 ) {
@@ -580,7 +581,7 @@ fn check_orphan_data_files(
     };
 
     let epoch = blockstore.epoch().current();
-    let now = crate::wall_clock_ms();
+    let now = blockstore.clock().wall_millis();
     let indexed_files = block_index.liveness_by_file(epoch, now, 0);
 
     let indexed_file_ids: HashSet<DataFileId> = indexed_files.keys().copied().collect();
@@ -600,7 +601,7 @@ fn check_orphan_data_files(
 }
 
 fn check_missing_indexed_files(
-    blockstore: &TranquilBlockStore,
+    blockstore: &TranquilBlockStore<RealIO, SystemClock>,
     block_index: &BlockIndex,
     report: &mut ConsistencyReport,
 ) {
@@ -613,7 +614,7 @@ fn check_missing_indexed_files(
     };
 
     let epoch = blockstore.epoch().current();
-    let now = crate::wall_clock_ms();
+    let now = blockstore.clock().wall_millis();
     let indexed_files = block_index.liveness_by_file(epoch, now, 0);
 
     indexed_files
@@ -622,7 +623,10 @@ fn check_missing_indexed_files(
         .for_each(|(fid, _)| report.missing_indexed_files.push(*fid));
 }
 
-fn check_orphan_hint_files(blockstore: &TranquilBlockStore, report: &mut ConsistencyReport) {
+fn check_orphan_hint_files(
+    blockstore: &TranquilBlockStore<RealIO, SystemClock>,
+    report: &mut ConsistencyReport,
+) {
     let data_files: HashSet<DataFileId> = match blockstore.list_data_files() {
         Ok(files) => files.into_iter().collect(),
         Err(e) => {
@@ -682,7 +686,7 @@ fn parse_user_hash_from_value(value_bytes: &[u8]) -> Option<UserHash> {
 }
 
 pub fn repair_known_issues(
-    blockstore: &TranquilBlockStore,
+    blockstore: &TranquilBlockStore<RealIO, SystemClock>,
     report: &ConsistencyReport,
 ) -> RepairResult {
     let mut result = RepairResult::default();

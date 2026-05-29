@@ -7,15 +7,15 @@ use common::{
     collect_refcounts, compact_by_liveness, compact_lowest_liveness, test_cid,
     tiny_blockstore_config, with_runtime,
 };
-use tranquil_store::RealIO;
 use tranquil_store::blockstore::{CidBytes, TranquilBlockStore};
 use tranquil_store::eventlog::{EventLog, EventLogBridge, EventLogConfig};
 use tranquil_store::metastore::handler::HandlerPool;
 use tranquil_store::metastore::partitions::Partition;
 use tranquil_store::metastore::{Metastore, MetastoreConfig};
+use tranquil_store::{RealIO, SystemClock};
 
 struct FullStack {
-    blockstore: TranquilBlockStore,
+    blockstore: TranquilBlockStore<RealIO, SystemClock>,
     _pool: Arc<HandlerPool>,
     _event_log: Arc<EventLog<RealIO>>,
 }
@@ -109,7 +109,7 @@ fn close_full_stack(stack: FullStack, base_dir: &Path) {
 }
 
 fn verify_blocks_and_refcounts(
-    store: &TranquilBlockStore,
+    store: &TranquilBlockStore<RealIO, SystemClock>,
     live_cids: &[CidBytes],
     expected_refcounts: Option<&[(u32, u32)]>,
     label: &str,

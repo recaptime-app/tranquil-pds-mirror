@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tranquil_store::RealIO;
 use tranquil_store::backup::{
     BackupCoordinator, BackupKind, read_manifest, recover_to_sequence, restore_from_backup,
     restore_from_incremental, verify_backup,
@@ -11,6 +10,7 @@ use tranquil_store::blockstore::{
 };
 use tranquil_store::eventlog::{EventLog, EventLogConfig};
 use tranquil_store::metastore::{Metastore, MetastoreConfig};
+use tranquil_store::{RealIO, SystemClock};
 
 fn test_cid(seed: u16) -> CidBytes {
     let mut cid = [0u8; 36];
@@ -32,7 +32,7 @@ fn block_data(seed: u16) -> Vec<u8> {
 
 struct TestStore {
     _dir: tempfile::TempDir,
-    blockstore: TranquilBlockStore,
+    blockstore: TranquilBlockStore<RealIO, SystemClock>,
     eventlog: Arc<EventLog<RealIO>>,
     metastore: Metastore,
 }
@@ -163,7 +163,10 @@ fn with_runtime<F: FnOnce()>(f: F) {
     f();
 }
 
-fn verify_blocks_readable(store: &TranquilBlockStore, range: std::ops::Range<u16>) {
+fn verify_blocks_readable(
+    store: &TranquilBlockStore<RealIO, SystemClock>,
+    range: std::ops::Range<u16>,
+) {
     range.for_each(|i| {
         let cid = test_cid(i);
         let data = store.get_block_sync(&cid).unwrap();

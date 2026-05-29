@@ -11,6 +11,7 @@ use jacquard_repo::error::RepoError;
 use jacquard_repo::repo::CommitData;
 use jacquard_repo::storage::BlockStore;
 
+use crate::clock::{Clock, SystemClock};
 use crate::fsync_order::PostBlockstoreHook;
 use crate::io::{OpenOptions, RealIO, StorageIO};
 
@@ -23,7 +24,7 @@ use super::manager::DataFileManager;
 use super::reader::{BlockStoreReader, ReadError};
 use super::types::{
     BlockLocation, BlockOffset, CollectionResult, CompactionResult, DataFileId, EpochCounter,
-    LivenessInfo, WallClockMs,
+    LivenessInfo,
 };
 
 fn cid_to_bytes(cid: &Cid) -> Result<[u8; CID_SIZE], RepoError> {
@@ -111,15 +112,16 @@ impl Drop for QuiesceGuard {
     }
 }
 
-pub struct TranquilBlockStore<S: StorageIO + Send + Sync + 'static = RealIO> {
+pub struct TranquilBlockStore<S: StorageIO + Send + Sync + 'static, C: Clock> {
     writer: Arc<WriterHandle>,
     reader: Arc<BlockStoreReader<S>>,
     index: Arc<BlockIndex>,
     epoch: EpochCounter,
     data_dir: PathBuf,
+    clock: C,
 }
 
-impl<S: StorageIO + Send + Sync + 'static> Clone for TranquilBlockStore<S> {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Clone for TranquilBlockStore<S, C> {
     fn clone(&self) -> Self {
         Self {
             writer: Arc::clone(&self.writer),
@@ -127,6 +129,7 @@ impl<S: StorageIO + Send + Sync + 'static> Clone for TranquilBlockStore<S> {
             index: Arc::clone(&self.index),
             epoch: self.epoch.clone(),
             data_dir: self.data_dir.clone(),
+            clock: self.clock.clone(),
         }
     }
 }
@@ -170,7 +173,7 @@ impl Default for OpenRetryPolicy {
     }
 }
 
-impl TranquilBlockStore<RealIO> {
+impl TranquilBlockStore<RealIO, SystemClock> {
     pub fn open(config: BlockStoreConfig) -> Result<Self, RepoError> {
         Self::open_with_hook(config, None)
     }
@@ -179,7 +182,7 @@ impl TranquilBlockStore<RealIO> {
         config: BlockStoreConfig,
         post_sync_hook: Option<Arc<dyn PostBlockstoreHook>>,
     ) -> Result<Self, RepoError> {
-        Self::open_with_io_hook(config, RealIO::new, post_sync_hook)
+        Self::open_with_io_hook(config, RealIO::new, post_sync_hook, SystemClock)
     }
 
     pub fn open_with_retry(
@@ -227,18 +230,23 @@ where
     }
 }
 
-impl<S: StorageIO + Send + Sync + 'static> TranquilBlockStore<S> {
-    pub fn open_with_io<F>(config: BlockStoreConfig, make_io: F) -> Result<Self, RepoError>
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
+    pub fn open_with_io<F>(
+        config: BlockStoreConfig,
+        make_io: F,
+        clock: C,
+    ) -> Result<Self, RepoError>
     where
         F: Fn() -> S + Send + Sync + Clone + 'static,
     {
-        Self::open_with_io_hook(config, make_io, None)
+        Self::open_with_io_hook(config, make_io, None, clock)
     }
 
     pub fn open_with_io_hook<F>(
         config: BlockStoreConfig,
         make_io: F,
         post_sync_hook: Option<Arc<dyn PostBlockstoreHook>>,
+        clock: C,
     ) -> Result<Self, RepoError>
     where
         F: Fn() -> S + Send + Sync + Clone + 'static,
@@ -295,6 +303,7 @@ impl<S: StorageIO + Send + Sync + 'static> TranquilBlockStore<S> {
             checkpoint_epoch,
             shard_count,
             checkpoint_positions,
+            clock.clone(),
         )
         .map_err(commit_error_to_repo)?;
         let epoch = writer.epoch().clone();
@@ -317,6 +326,7 @@ impl<S: StorageIO + Send + Sync + 'static> TranquilBlockStore<S> {
             index,
             epoch,
             data_dir,
+            clock,
         })
     }
 
@@ -497,9 +507,13 @@ impl<S: StorageIO + Send + Sync + 'static> TranquilBlockStore<S> {
         ))
     }
 
+    pub fn clock(&self) -> &C {
+        &self.clock
+    }
+
     pub fn collect_dead_blocks(&self, grace_period_ms: u64) -> Result<CollectionResult, RepoError> {
         let current_epoch = self.epoch.current();
-        let now = WallClockMs::now();
+        let now = self.clock.wall_millis();
         Ok(self
             .index
             .collect_dead_blocks(current_epoch, now, grace_period_ms))
@@ -536,7 +550,7 @@ impl<S: StorageIO + Send + Sync + 'static> TranquilBlockStore<S> {
         grace_period_ms: u64,
     ) -> Result<HashMap<DataFileId, LivenessInfo>, RepoError> {
         let current_epoch = self.epoch.current();
-        let now = WallClockMs::now();
+        let now = self.clock.wall_millis();
         Ok(self
             .index
             .liveness_by_file(current_epoch, now, grace_period_ms))
@@ -700,7 +714,7 @@ impl<S: StorageIO + Send + Sync + 'static> TranquilBlockStore<S> {
     }
 }
 
-impl<S: StorageIO + Send + Sync + 'static> BlockStore for TranquilBlockStore<S> {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> BlockStore for TranquilBlockStore<S, C> {
     async fn get(&self, cid: &Cid) -> Result<Option<Bytes>, RepoError> {
         let cid_bytes = cid_to_bytes(cid)?;
         let reader = Arc::clone(&self.reader);
@@ -772,7 +786,7 @@ impl<S: StorageIO + Send + Sync + 'static> BlockStore for TranquilBlockStore<S> 
     }
 }
 
-impl<S: StorageIO + Send + Sync + 'static> TranquilBlockStore<S> {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
     pub async fn decrement_refs(&self, cids: &[Cid]) -> Result<(), RepoError> {
         if cids.is_empty() {
             return Ok(());
@@ -920,7 +934,7 @@ mod tests {
 
         let index = BlockIndex::open(&index_dir).unwrap();
 
-        let result = TranquilBlockStore::<EioOnReadAtRange>::replay_single_file(
+        let result = TranquilBlockStore::<EioOnReadAtRange, SystemClock>::replay_single_file(
             &wrapper,
             &data_dir,
             &index,

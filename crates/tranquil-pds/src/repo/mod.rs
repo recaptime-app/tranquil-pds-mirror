@@ -8,11 +8,12 @@ use jacquard_repo::error::RepoError;
 use jacquard_repo::repo::CommitData;
 use jacquard_repo::storage::BlockStore;
 use tranquil_store::blockstore::TranquilBlockStore;
+use tranquil_store::{RealIO, SystemClock};
 
 #[derive(Clone)]
 pub enum AnyBlockStore {
     Postgres(PostgresBlockStore),
-    TranquilStore(TranquilBlockStore),
+    TranquilStore(TranquilBlockStore<RealIO, SystemClock>),
 }
 
 impl AnyBlockStore {
@@ -23,7 +24,7 @@ impl AnyBlockStore {
         }
     }
 
-    pub fn as_tranquil_store(&self) -> Option<&TranquilBlockStore> {
+    pub fn as_tranquil_store(&self) -> Option<&TranquilBlockStore<RealIO, SystemClock>> {
         match self {
             Self::TranquilStore(s) => Some(s),
             Self::Postgres(_) => None,

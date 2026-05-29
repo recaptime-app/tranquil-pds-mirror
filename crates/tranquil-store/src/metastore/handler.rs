@@ -42,8 +42,9 @@ use super::keys::UserHash;
 use super::record_ops::ListRecordsQuery;
 use super::user_hash::UserHashMap;
 use crate::blockstore::TranquilBlockStore;
+use crate::clock::SystemClock;
 use crate::eventlog::EventLogBridge;
-use crate::io::StorageIO;
+use crate::io::{RealIO, StorageIO};
 use crate::metastore::Metastore;
 
 type Tx<T> = oneshot::Sender<Result<T, DbError>>;
@@ -5956,7 +5957,7 @@ fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserReque
 fn handler_loop<S: StorageIO + 'static>(
     metastore: Metastore,
     bridge: Arc<EventLogBridge<S>>,
-    blockstore: Option<TranquilBlockStore>,
+    blockstore: Option<TranquilBlockStore<RealIO, SystemClock>>,
     rx: flume::Receiver<MetastoreRequest>,
     thread_index: usize,
 ) {
@@ -6004,7 +6005,7 @@ impl HandlerPool {
     pub fn spawn<S: StorageIO + 'static>(
         metastore: Metastore,
         bridge: Arc<EventLogBridge<S>>,
-        blockstore: Option<TranquilBlockStore>,
+        blockstore: Option<TranquilBlockStore<RealIO, SystemClock>>,
         thread_count: Option<usize>,
     ) -> Self {
         let count = thread_count
@@ -6106,7 +6107,6 @@ impl Drop for HandlerPool {
 mod tests {
     use super::*;
     use crate::eventlog::{EventLog, EventLogConfig};
-    use crate::io::RealIO;
     use crate::metastore::MetastoreConfig;
     use tranquil_types::{Did, Handle};
 

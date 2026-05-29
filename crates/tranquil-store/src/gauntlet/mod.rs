@@ -24,8 +24,8 @@ pub use invariants::{
 pub use leak::{LeakGateBuildError, LeakGateConfig, LeakViolation, evaluate as evaluate_leak_gate};
 pub use metrics::{MetricName, MetricsSample, sample_harness};
 pub use op::{
-    CollectionName, DidSeed, EventKind, FileChoice, Op, OpStream, PayloadSeed, RecordKey,
-    RetentionSecs, Seed, ValueSeed,
+    AdvanceNanos, CollectionName, DidSeed, EventKind, FileChoice, Op, OpStream, PayloadSeed,
+    RecordKey, RetentionSecs, Seed, ValueSeed,
 };
 pub use oracle::{EventExpectation, Oracle};
 pub use overrides::{ConfigOverrides, GroupCommitOverrides, StoreOverrides};
@@ -42,6 +42,6 @@ pub use soak::{
     SoakEvent, SoakReport, run_soak,
 };
 pub use workload::{
-    ByteRange, DidSpaceSize, KeySpaceSize, OpCount, OpWeights, RetentionMaxSecs, SizeDistribution,
-    ValueBytes, WorkloadModel,
+    AdvanceMaxSecs, ByteRange, DidSpaceSize, KeySpaceSize, OpCount, OpWeights, RetentionMaxSecs,
+    SizeDistribution, ValueBytes, WorkloadModel,
 };

@@ -5,6 +5,7 @@ use tranquil_store::blockstore::{
     BlockStoreConfig, CidBytes, DEFAULT_MAX_FILE_SIZE, DataFileId, GroupCommitConfig,
     TranquilBlockStore,
 };
+use tranquil_store::{RealIO, SystemClock};
 
 fn test_cid_u32(seed: u32) -> [u8; 36] {
     let mut cid = [0u8; 36];
@@ -50,7 +51,7 @@ fn with_runtime<F: FnOnce()>(f: F) {
     f();
 }
 
-fn collect_all_dead(store: &TranquilBlockStore) -> HashSet<CidBytes> {
+fn collect_all_dead(store: &TranquilBlockStore<RealIO, SystemClock>) -> HashSet<CidBytes> {
     let result = store.collect_dead_blocks(0).unwrap();
     result
         .candidates
@@ -59,7 +60,7 @@ fn collect_all_dead(store: &TranquilBlockStore) -> HashSet<CidBytes> {
         .collect()
 }
 
-fn compact_all_sealed(store: &TranquilBlockStore) {
+fn compact_all_sealed(store: &TranquilBlockStore<RealIO, SystemClock>) {
     let files = store.list_data_files().unwrap();
     let sealed: Vec<DataFileId> = files
         .iter()
@@ -72,7 +73,7 @@ fn compact_all_sealed(store: &TranquilBlockStore) {
     });
 }
 
-fn verify_live_readable(store: &TranquilBlockStore, oracle: &GcOracle) {
+fn verify_live_readable(store: &TranquilBlockStore<RealIO, SystemClock>, oracle: &GcOracle) {
     oracle.live_seeds().iter().for_each(|&seed| {
         let cid = test_cid_u32(seed);
         let data = store
@@ -92,7 +93,7 @@ fn verify_live_readable(store: &TranquilBlockStore, oracle: &GcOracle) {
     });
 }
 
-fn verify_no_live_in_dead(store: &TranquilBlockStore, oracle: &GcOracle) {
+fn verify_no_live_in_dead(store: &TranquilBlockStore<RealIO, SystemClock>, oracle: &GcOracle) {
     let dead = collect_all_dead(store);
     oracle.live_seeds().iter().for_each(|&seed| {
         let cid = test_cid_u32(seed);
@@ -150,7 +151,7 @@ impl GcOracle {
     }
 }
 
-fn advance_epoch(store: &TranquilBlockStore) {
+fn advance_epoch(store: &TranquilBlockStore<RealIO, SystemClock>) {
     store.apply_commit_blocking(vec![], vec![]).unwrap();
 }
 

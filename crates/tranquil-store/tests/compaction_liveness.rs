@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use tranquil_store::blockstore::{
     BlockStoreConfig, CidBytes, GroupCommitConfig, TranquilBlockStore,
 };
+use tranquil_store::{RealIO, SystemClock};
 
 fn tiny_store_config(dir: &std::path::Path) -> BlockStoreConfig {
     BlockStoreConfig {
@@ -31,7 +32,11 @@ fn make_block(seed: u32, size: usize) -> (CidBytes, Vec<u8>) {
     )
 }
 
-fn verify_live_blocks(store: &TranquilBlockStore, live: &HashSet<u32>, context: &str) {
+fn verify_live_blocks(
+    store: &TranquilBlockStore<RealIO, SystemClock>,
+    live: &HashSet<u32>,
+    context: &str,
+) {
     let missing: Vec<u32> = live
         .iter()
         .copied()
@@ -50,7 +55,7 @@ fn verify_live_blocks(store: &TranquilBlockStore, live: &HashSet<u32>, context: 
     );
 }
 
-fn compact_sealed(store: &TranquilBlockStore) {
+fn compact_sealed(store: &TranquilBlockStore<RealIO, SystemClock>) {
     let files = store.list_data_files().unwrap();
     files
         .iter()

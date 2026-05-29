@@ -18,6 +18,7 @@ use super::runner::{
 };
 use super::workload::OpCount;
 use crate::blockstore::TranquilBlockStore;
+use crate::clock::Clock;
 use crate::io::{RealIO, StorageIO};
 
 const OP_ERROR_LOG_THROTTLE: u64 = 1024;
@@ -137,7 +138,7 @@ pub async fn run_soak<W: Write + Send>(
     outcome
 }
 
-fn shutdown_harness<S: StorageIO + Send + Sync + 'static>(harness: &mut Harness<S>) {
+fn shutdown_harness<S: StorageIO + Send + Sync + 'static, C: Clock>(harness: &mut Harness<S, C>) {
     if let Some(el) = harness.eventlog.as_mut() {
         if let Err(e) = el.writer.shutdown() {
             warn!(error = %e, "soak: event log writer shutdown failed");
@@ -146,15 +147,17 @@ fn shutdown_harness<S: StorageIO + Send + Sync + 'static>(harness: &mut Harness<
     }
 }
 
-async fn drive_soak<S, W>(
-    harness: &mut Harness<S>,
+async fn drive_soak<S, C, W>(
+    harness: &mut Harness<S, C>,
     cfg: &SoakConfig,
     emitter: &mut W,
 ) -> Result<SoakReport, SoakError>
 where
     S: StorageIO + Send + Sync + 'static,
+    C: Clock,
     W: Write + Send,
 {
+    let clock = harness.store.clock().clone();
     let mut oracle = Oracle::new();
     let mut root: Option<Cid> = None;
 
@@ -194,7 +197,16 @@ where
             if start.elapsed() >= cfg.total_duration {
                 break;
             }
-            match apply_op(harness, &mut root, &mut oracle, op, &cfg.gauntlet.workload).await {
+            match apply_op(
+                harness,
+                &mut root,
+                &mut oracle,
+                op,
+                &cfg.gauntlet.workload,
+                &clock,
+            )
+            .await
+            {
                 Ok(()) => {
                     ops_executed = ops_executed.saturating_add(1);
                 }

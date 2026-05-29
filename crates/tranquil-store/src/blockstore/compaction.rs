@@ -9,6 +9,7 @@ use super::hint::{HintFileWriter, hint_file_path};
 use super::manager::DataFileManager;
 use super::types::{
     BlockLocation, CidBytes, CommitEpoch, CompactionResult, CompactionStats, DataFileId,
+    WallClockMs,
 };
 
 #[derive(Debug)]
@@ -65,6 +66,7 @@ pub(super) fn compact_on_writer_thread<S: StorageIO>(
     active_files: &ActiveFileSet,
     hint_positions: &super::group_commit::ShardHintPositions,
     epoch: &super::types::EpochCounter,
+    now: WallClockMs,
 ) -> Result<CompactionResult, CompactionError> {
     if active_files.contains(source_file_id) {
         return Err(CompactionError::ActiveFileCannotBeCompacted);
@@ -89,6 +91,7 @@ pub(super) fn compact_on_writer_thread<S: StorageIO>(
         new_file_id,
         current_epoch,
         grace_period_ms,
+        now,
     );
 
     match result {
@@ -183,6 +186,7 @@ fn purge_phantom_file<S: StorageIO>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream_compact<S: StorageIO>(
     manager: &DataFileManager<S>,
     index: &BlockIndex,
@@ -191,9 +195,9 @@ fn stream_compact<S: StorageIO>(
     new_file_id: DataFileId,
     current_epoch: CommitEpoch,
     grace_period_ms: u64,
+    now: WallClockMs,
 ) -> Result<(u64, u64, u64, super::types::HintOffset), CompactionError> {
     let mut reader = DataFileReader::open(manager.io(), source_fd)?;
-    let now = crate::wall_clock_ms();
 
     let new_handle = manager.open_for_append(new_file_id)?;
     let mut writer = DataFileWriter::new(manager.io(), new_handle.fd(), new_file_id)?;

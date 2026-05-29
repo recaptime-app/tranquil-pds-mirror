@@ -1,0 +1,12 @@
+target/
+.git/
+.jj/
+**/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/.pnpm-store/
+.direnv/
+result
+.env
+*.output
+reference-pds-bsky/

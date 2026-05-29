@@ -13,7 +13,7 @@ use tranquil_store::blockstore::{
     WallClockMs, WriteCursor, hint_file_path,
 };
 use tranquil_store::{
-    FaultConfig, OpenOptions, SimulatedIO, StorageIO, SyncReorderWindow, sim_seed_range,
+    FaultConfig, OpenOptions, SimClock, SimulatedIO, StorageIO, SyncReorderWindow, sim_seed_range,
 };
 
 use common::{Rng, advance_epoch, block_data, test_cid, with_runtime};
@@ -717,11 +717,12 @@ fn sim_sync_reorder_loses_first_commit_durability() {
 
         {
             let s = Arc::clone(&sim);
-            let store =
-                TranquilBlockStore::<Arc<SimulatedIO>>::open_with_io(config.clone(), move || {
-                    Arc::clone(&s)
-                })
-                .unwrap();
+            let store = TranquilBlockStore::<Arc<SimulatedIO>, SimClock>::open_with_io(
+                config.clone(),
+                move || Arc::clone(&s),
+                sim.clock(),
+            )
+            .unwrap();
             store
                 .put_blocks_blocking(vec![(cid, data.clone())])
                 .unwrap();
@@ -730,9 +731,12 @@ fn sim_sync_reorder_loses_first_commit_durability() {
         sim.crash();
 
         let s = Arc::clone(&sim);
-        let store =
-            TranquilBlockStore::<Arc<SimulatedIO>>::open_with_io(config, move || Arc::clone(&s))
-                .unwrap();
+        let store = TranquilBlockStore::<Arc<SimulatedIO>, SimClock>::open_with_io(
+            config,
+            move || Arc::clone(&s),
+            sim.clock(),
+        )
+        .unwrap();
 
         match store.get_block_sync(&cid) {
             Ok(Some(d)) => assert_eq!(&d[..], &data[..], "block content mismatch after crash"),

@@ -10,7 +10,9 @@ use tranquil_store::blockstore::{
     BlockStoreConfig, DataFileId, DataFileManager, DataFileWriter, GroupCommitConfig,
     TranquilBlockStore,
 };
-use tranquil_store::{FileId, MappedFile, OpenOptions, RealIO, SimulatedIO, StorageIO};
+use tranquil_store::{
+    FileId, MappedFile, OpenOptions, RealIO, SimulatedIO, StorageIO, SystemClock,
+};
 
 use common::{test_cid, with_runtime};
 
@@ -149,9 +151,11 @@ fn post_rotation_sync_failure_deletes_new_rotation_files() {
             shard_count: 1,
         };
 
-        let store = TranquilBlockStore::<FailingIO>::open_with_io(config, move || {
-            FailingIO::new(Arc::clone(&spec_for_factory))
-        })
+        let store = TranquilBlockStore::<FailingIO, SystemClock>::open_with_io(
+            config,
+            move || FailingIO::new(Arc::clone(&spec_for_factory)),
+            SystemClock,
+        )
         .unwrap();
 
         store

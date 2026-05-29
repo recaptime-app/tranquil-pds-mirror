@@ -6,10 +6,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use crate::clock::{Clock, SimClock};
 use crate::io::{FileId, OpenOptions, StorageIO};
 
 pub const TORN_PAGE_BYTES: usize = 4096;
 pub const SECTOR_BYTES: usize = 512;
+
+const BASE_IO_SERVICE_NS: u64 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Probability(f64);
@@ -331,6 +334,7 @@ pub struct SimulatedIO {
     pristine_mode: AtomicBool,
     rng_seed: u64,
     latency_counter: AtomicU64,
+    clock: SimClock,
 }
 
 impl SimulatedIO {
@@ -352,7 +356,12 @@ impl SimulatedIO {
             pristine_mode: AtomicBool::new(false),
             rng_seed: seed,
             latency_counter: AtomicU64::new(0),
+            clock: SimClock::new(seed),
         }
+    }
+
+    pub fn clock(&self) -> SimClock {
+        self.clock.clone()
     }
 
     fn effective_fault_config(&self) -> FaultConfig {
@@ -369,13 +378,15 @@ impl SimulatedIO {
 
     fn jitter(&self) {
         let max_ns = self.effective_fault_config().latency_distribution_ns.0;
-        if max_ns == 0 {
-            return;
-        }
-        let c = self.latency_counter.fetch_add(1, Ordering::Relaxed);
-        let r = splitmix64(self.rng_seed.wrapping_add(c));
-        let ns = r % max_ns;
-        std::thread::sleep(Duration::from_nanos(ns));
+        let extra_ns = match max_ns {
+            0 => 0,
+            max => {
+                let c = self.latency_counter.fetch_add(1, Ordering::Relaxed);
+                splitmix64(self.rng_seed.wrapping_add(c)) % max
+            }
+        };
+        self.clock
+            .advance(Duration::from_nanos(BASE_IO_SERVICE_NS + extra_ns));
     }
 
     pub fn pristine(seed: u64) -> Self {
@@ -907,7 +918,7 @@ pub fn sim_proptest_cases() -> u32 {
     u32::try_from(sim_seed_count()).unwrap_or(u32::MAX)
 }
 
-fn splitmix64(mut x: u64) -> u64 {
+pub(crate) fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9e3779b97f4a7c15);
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);

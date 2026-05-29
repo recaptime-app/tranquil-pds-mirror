@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tracing::warn;
 
+use crate::clock::{Clock, SystemClock};
 use crate::io::{FileId, StorageIO};
 
 use super::manager::SegmentManager;
@@ -12,9 +13,7 @@ use super::segment_file::{
 };
 use super::segment_index::{DEFAULT_INDEX_INTERVAL, SegmentIndex, rebuild_from_segment};
 use super::sidecar::build_sidecar_from_segment;
-use super::types::{
-    DidHash, EventSequence, EventTypeTag, SegmentId, SegmentOffset, TimestampMicros,
-};
+use super::types::{DidHash, EventSequence, EventTypeTag, SegmentId, SegmentOffset};
 
 const VALIDATE_RETRY_ATTEMPTS: u32 = 32;
 
@@ -241,6 +240,16 @@ impl<S: StorageIO> EventLogWriter<S> {
         event_type: EventTypeTag,
         payload: Vec<u8>,
     ) -> io::Result<EventSequence> {
+        self.append_with_clock(did_hash, event_type, payload, &SystemClock)
+    }
+
+    pub fn append_with_clock<C: Clock>(
+        &mut self,
+        did_hash: DidHash,
+        event_type: EventTypeTag,
+        payload: Vec<u8>,
+        clock: &C,
+    ) -> io::Result<EventSequence> {
         let payload_len = u32::try_from(payload.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "payload exceeds u32::MAX"))?;
         if payload_len > self.max_payload {
@@ -252,7 +261,7 @@ impl<S: StorageIO> EventLogWriter<S> {
         }
 
         let seq = self.next_seq;
-        let timestamp = TimestampMicros::now();
+        let timestamp = clock.unix_micros();
 
         let event = ValidEvent {
             seq,

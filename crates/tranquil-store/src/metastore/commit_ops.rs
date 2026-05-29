@@ -20,8 +20,9 @@ use super::user_block_ops::UserBlockOps;
 use super::user_blocks::user_block_user_prefix;
 use super::user_hash::UserHashMap;
 use crate::blockstore::TranquilBlockStore;
+use crate::clock::SystemClock;
 use crate::eventlog::EventLogBridge;
-use crate::io::StorageIO;
+use crate::io::{RealIO, StorageIO};
 
 use tranquil_db_traits::{
     ApplyCommitError, ApplyCommitInput, ApplyCommitResult, ImportBlock, ImportRecord,
@@ -81,7 +82,7 @@ pub struct CommitOps<S: StorageIO> {
     user_block_ops: UserBlockOps,
     backlink_ops: BacklinkOps,
     event_ops: EventOps<S>,
-    blockstore: Option<TranquilBlockStore>,
+    blockstore: Option<TranquilBlockStore<RealIO, SystemClock>>,
 }
 
 impl<S: StorageIO + 'static> CommitOps<S> {
@@ -110,7 +111,7 @@ impl<S: StorageIO + 'static> CommitOps<S> {
         }
     }
 
-    pub fn with_blockstore(mut self, blockstore: TranquilBlockStore) -> Self {
+    pub fn with_blockstore(mut self, blockstore: TranquilBlockStore<RealIO, SystemClock>) -> Self {
         self.blockstore = Some(blockstore);
         self
     }
@@ -474,7 +475,6 @@ fn parse_user_hash_from_key(key_bytes: &[u8]) -> Option<UserHash> {
 mod tests {
     use super::*;
     use crate::eventlog::{EventLog, EventLogConfig};
-    use crate::io::RealIO;
     use crate::metastore::{Metastore, MetastoreConfig};
     use tranquil_db_traits::{CommitEventData, RepoEventType};
     use tranquil_types::{Handle, Nsid, Rkey};

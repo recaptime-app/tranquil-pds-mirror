@@ -164,21 +164,21 @@ container-pull:
     podman pull atcr.io/tranquil.farm/tranquil-pds:latest
 
 frontend-dev:
-    . ~/.deno/env && cd frontend && deno task dev
+    cd frontend && pnpm run dev
 frontend-build:
-    . ~/.deno/env && cd frontend && deno task build
+    cd frontend && pnpm run build
 frontend-check:
-    . ~/.deno/env && cd frontend && deno task check
+    cd frontend && pnpm run check
 frontend-clean:
     rm -rf frontend/dist frontend/node_modules
 
 frontend-test *args:
-    . ~/.deno/env && cd frontend && VITEST=true deno task test:run {{args}}
+    cd frontend && VITEST=true pnpm run test:run {{args}}
 frontend-test-watch:
-    . ~/.deno/env && cd frontend && VITEST=true deno task test:watch
+    cd frontend && VITEST=true pnpm run test:watch
 frontend-test-ui:
-    . ~/.deno/env && cd frontend && VITEST=true deno task test:ui
+    cd frontend && VITEST=true pnpm run test:ui
 frontend-test-coverage:
-    . ~/.deno/env && cd frontend && VITEST=true deno task test:run --coverage
+    cd frontend && VITEST=true pnpm run test:run --coverage
 
 build-all: frontend-build build

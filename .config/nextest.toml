@@ -106,6 +106,16 @@ slow-timeout = { period = "300s", terminate-after = 8 }
 filter = "binary(compaction_restart) | binary(mst_refcount_integrity) | binary(gc_compaction_restart)"
 slow-timeout = { period = "120s", terminate-after = 4 }
 
+[[profile.default.overrides]]
+filter = "test(/retention_time_travel_survives_many_seeds/)"
+slow-timeout = { period = "300s", terminate-after = 24 }
+test-group = "io-heavy-sim"
+
+[[profile.default.overrides]]
+filter = "binary(fd_lifecycle)"
+slow-timeout = { period = "300s", terminate-after = 4 }
+test-group = "io-heavy-sim"
+
 [[profile.ci.overrides]]
 filter = "test(/import_with_verification/) | test(/plc_migration/)"
 test-group = "serial-env-tests"
@@ -137,3 +147,13 @@ test-group = "heavy-load-tests"
 [[profile.ci.overrides]]
 filter = "binary(repo_lifecycle)"
 test-group = "heavy-load-tests"
+
+[[profile.ci.overrides]]
+filter = "test(/retention_time_travel_survives_many_seeds/)"
+slow-timeout = { period = "300s", terminate-after = 24 }
+test-group = "io-heavy-sim"
+
+[[profile.ci.overrides]]
+filter = "binary(fd_lifecycle)"
+slow-timeout = { period = "300s", terminate-after = 4 }
+test-group = "io-heavy-sim"

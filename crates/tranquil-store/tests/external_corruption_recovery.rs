@@ -6,12 +6,16 @@ use common::{block_data, test_cid, tiny_blockstore_config, with_runtime};
 use tranquil_store::blockstore::{
     CompactionResult, DataFileId, TranquilBlockStore, hint_file_path,
 };
+use tranquil_store::{RealIO, SystemClock};
 
 fn data_file_path(dir: &std::path::Path, file_id: DataFileId) -> std::path::PathBuf {
     dir.join(format!("{file_id}.tqb"))
 }
 
-fn populate_with_compaction_history(store: &TranquilBlockStore, live_cids: &[u32]) {
+fn populate_with_compaction_history(
+    store: &TranquilBlockStore<RealIO, SystemClock>,
+    live_cids: &[u32],
+) {
     live_cids.iter().for_each(|&seed| {
         store
             .put_blocks_blocking(vec![(test_cid(seed), block_data(seed))])

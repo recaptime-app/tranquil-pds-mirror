@@ -7,6 +7,7 @@ use tracing::warn;
 
 use super::runner::{EventLogState, Harness};
 use crate::blockstore::TranquilBlockStore;
+use crate::clock::Clock;
 use crate::io::StorageIO;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -94,8 +95,8 @@ impl MetricName {
     }
 }
 
-pub fn sample_harness<S: StorageIO + Send + Sync + 'static>(
-    harness: &Harness<S>,
+pub fn sample_harness<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    harness: &Harness<S, C>,
     elapsed: Duration,
 ) -> MetricsSample {
     MetricsSample {
@@ -116,8 +117,8 @@ pub fn sample_harness<S: StorageIO + Send + Sync + 'static>(
     }
 }
 
-fn data_file_count<S: StorageIO + Send + Sync + 'static>(
-    store: &Arc<TranquilBlockStore<S>>,
+fn data_file_count<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &Arc<TranquilBlockStore<S, C>>,
 ) -> Option<u64> {
     match store.list_data_files() {
         Ok(v) => Some(v.len() as u64),

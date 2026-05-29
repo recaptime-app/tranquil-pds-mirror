@@ -1,10 +1,10 @@
 use tranquil_store::FaultConfig;
 use tranquil_store::blockstore::GroupCommitConfig;
 use tranquil_store::gauntlet::{
-    CollectionName, ConfigOverrides, DidSpaceSize, Gauntlet, GauntletConfig, GauntletReport,
-    InvariantSet, IoBackend, KeySpaceSize, MaxFileSize, OpCount, OpInterval, OpWeights,
-    RegressionRecord, RestartPolicy, RetentionMaxSecs, RunLimits, Scenario, Seed, ShardCount,
-    SizeDistribution, StoreConfig, StoreOverrides, ValueBytes, WallMs, WorkloadModel,
+    AdvanceMaxSecs, CollectionName, ConfigOverrides, DidSpaceSize, Gauntlet, GauntletConfig,
+    GauntletReport, InvariantSet, IoBackend, KeySpaceSize, MaxFileSize, OpCount, OpInterval,
+    OpWeights, RegressionRecord, RestartPolicy, RetentionMaxSecs, RunLimits, Scenario, Seed,
+    ShardCount, SizeDistribution, StoreConfig, StoreOverrides, ValueBytes, WallMs, WorkloadModel,
     WriterConcurrency, config_for, farm,
 };
 
@@ -60,6 +60,7 @@ fn fast_sanity_config(seed: Seed) -> GauntletConfig {
             key_space: KeySpaceSize(100),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(200),
         invariants: InvariantSet::REFCOUNT_CONSERVATION
@@ -126,6 +127,7 @@ async fn compaction_idempotent_sanity() {
             key_space: KeySpaceSize(50),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(300),
         invariants: InvariantSet::REFCOUNT_CONSERVATION
@@ -165,6 +167,7 @@ async fn no_orphan_files_sanity() {
             key_space: KeySpaceSize(80),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(200),
         invariants: InvariantSet::REFCOUNT_CONSERVATION
@@ -209,6 +212,7 @@ async fn simulated_pristine_roundtrip() {
             key_space: KeySpaceSize(80),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(300),
         invariants: InvariantSet::REFCOUNT_CONSERVATION
@@ -260,6 +264,7 @@ async fn firehose_fanout_pristine_smoke() {
             key_space: KeySpaceSize(100),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(60),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(2_000),
         invariants: InvariantSet::REFCOUNT_CONSERVATION
@@ -312,6 +317,7 @@ async fn contended_readers_pristine_smoke() {
             key_space: KeySpaceSize(200),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(1_000),
         invariants: InvariantSet::REFCOUNT_CONSERVATION
@@ -360,6 +366,7 @@ async fn contended_writers_pristine_smoke() {
             key_space: KeySpaceSize(500),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(1_000),
         invariants: InvariantSet::REFCOUNT_CONSERVATION
@@ -491,6 +498,7 @@ async fn torn_pages_only_completes_within_budget() {
             key_space: KeySpaceSize(500),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(2_000),
         invariants: InvariantSet::REFCOUNT_CONSERVATION

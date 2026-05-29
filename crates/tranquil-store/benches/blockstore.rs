@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use tranquil_store::blockstore::{
     BlockStoreConfig, DEFAULT_MAX_FILE_SIZE, GroupCommitConfig, TranquilBlockStore,
 };
+use tranquil_store::{RealIO, SystemClock};
 
 const DAG_CBOR_CODEC: u64 = 0x71;
 const SHA2_256_CODE: u64 = 0x12;
@@ -60,11 +61,11 @@ fn compute_stats(durations: &mut [Duration]) -> Option<LatencyStats> {
     })
 }
 
-fn open_store(dir: &Path) -> TranquilBlockStore {
+fn open_store(dir: &Path) -> TranquilBlockStore<RealIO, SystemClock> {
     open_store_sharded(dir, 1)
 }
 
-fn open_store_sharded(dir: &Path, shard_count: u8) -> TranquilBlockStore {
+fn open_store_sharded(dir: &Path, shard_count: u8) -> TranquilBlockStore<RealIO, SystemClock> {
     TranquilBlockStore::open(BlockStoreConfig {
         data_dir: dir.join("data"),
         index_dir: dir.join("index"),
@@ -183,7 +184,9 @@ async fn bench_read_throughput(block_count: usize, concurrency: usize) {
         cids
     };
 
-    let run_reads = |label: &'static str, store: TranquilBlockStore, cids: Vec<Cid>| async move {
+    let run_reads = |label: &'static str,
+                     store: TranquilBlockStore<RealIO, SystemClock>,
+                     cids: Vec<Cid>| async move {
         let start = Instant::now();
 
         let handles: Vec<_> = (0..concurrency)

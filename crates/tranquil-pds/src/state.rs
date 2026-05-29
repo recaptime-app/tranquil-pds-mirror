@@ -471,7 +471,10 @@ impl AppState {
 }
 
 struct TranquilStoreWiring {
-    blockstore: tranquil_store::blockstore::TranquilBlockStore,
+    blockstore: tranquil_store::blockstore::TranquilBlockStore<
+        tranquil_store::RealIO,
+        tranquil_store::SystemClock,
+    >,
     signal_provider: Arc<dyn tranquil_signal::SignalStoreProvider>,
     repos: PostgresRepositories,
     segments_dir: PathBuf,

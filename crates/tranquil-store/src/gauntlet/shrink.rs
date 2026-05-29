@@ -112,8 +112,8 @@ mod tests {
         RestartPolicy, RunLimits, ShardCount, StoreConfig, WriterConcurrency,
     };
     use crate::gauntlet::workload::{
-        DidSpaceSize, KeySpaceSize, OpCount, OpWeights, RetentionMaxSecs, SizeDistribution,
-        ValueBytes, WorkloadModel,
+        AdvanceMaxSecs, DidSpaceSize, KeySpaceSize, OpCount, OpWeights, RetentionMaxSecs,
+        SizeDistribution, ValueBytes, WorkloadModel,
     };
     use crate::sim::FaultConfig;
 
@@ -130,6 +130,7 @@ mod tests {
                 key_space: KeySpaceSize(4),
                 did_space: DidSpaceSize(1),
                 retention_max_secs: RetentionMaxSecs(60),
+                advance_max_secs: AdvanceMaxSecs(7200),
             },
             op_count: OpCount(4),
             invariants: InvariantSet::EMPTY,

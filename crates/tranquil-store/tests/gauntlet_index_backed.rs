@@ -5,8 +5,8 @@ use std::sync::Arc;
 use common::with_runtime;
 use tranquil_store::blockstore::{BlockStoreConfig, GroupCommitConfig, TranquilBlockStore};
 use tranquil_store::gauntlet::{
-    Gauntlet, IndexBackedByDisk, Invariant, InvariantCtx, InvariantSet, Oracle, Scenario, Seed,
-    config_for,
+    Gauntlet, IndexBackedByDisk, Invariant, InvariantCtx, InvariantSet, Op, OpStream, Oracle,
+    RetentionSecs, Scenario, Seed, config_for,
 };
 
 #[test]
@@ -82,6 +82,43 @@ async fn external_corruption_scenario_survives_many_seeds() {
             let report = Gauntlet::new(cfg).expect("build gauntlet").run().await;
             (seed, report)
         }))
+        .await
+        .into_iter()
+        .filter(|(_, r)| !r.is_clean())
+        .map(|(seed, r)| {
+            format!(
+                "seed {}: {} violations\n  {}",
+                seed.0,
+                r.violations.len(),
+                r.violations
+                    .iter()
+                    .map(|v| format!("{}: {}", v.invariant, v.detail))
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            )
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+}
+
+#[tokio::test]
+async fn retention_time_travel_survives_many_seeds() {
+    use futures::stream::StreamExt;
+
+    let failures: Vec<String> = futures::stream::iter(tranquil_store::sim_seed_range().map(Seed))
+        .map(|seed| async move {
+            let g = Gauntlet::new(config_for(Scenario::RetentionTimeTravel, seed))
+                .expect("build gauntlet");
+            let mut ops = g.generate_ops().into_vec();
+            ops.push(Op::SyncEventLog);
+            ops.push(Op::RunRetention {
+                max_age_secs: RetentionSecs(604_800),
+            });
+            let report = g.run_with_ops(OpStream::from_vec(ops)).await;
+            (seed, report)
+        })
+        .buffer_unordered(16)
+        .collect::<Vec<_>>()
         .await
         .into_iter()
         .filter(|(_, r)| !r.is_clean())

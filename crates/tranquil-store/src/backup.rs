@@ -8,6 +8,7 @@ use crate::blockstore::{
     BlockOffset, BlockstoreSnapshot, CommitEpoch, CommitError, DataFileId, QuiesceGuard,
     RebuildError, TranquilBlockStore,
 };
+use crate::clock::SystemClock;
 use crate::eventlog::{
     EventLog, EventLogConfig, EventLogFreezeGuard, EventLogSnapshotState, EventSequence,
     EventWithMutations, SegmentId, SegmentOffset,
@@ -157,14 +158,14 @@ enum BackupLineage<'a> {
 }
 
 pub struct BackupCoordinator<'a, S: StorageIO> {
-    blockstore: &'a TranquilBlockStore,
+    blockstore: &'a TranquilBlockStore<RealIO, SystemClock>,
     eventlog: &'a EventLog<S>,
     metastore: &'a Metastore,
 }
 
 impl<'a, S: StorageIO + Send + Sync + 'static> BackupCoordinator<'a, S> {
     pub fn new(
-        blockstore: &'a TranquilBlockStore,
+        blockstore: &'a TranquilBlockStore<RealIO, SystemClock>,
         eventlog: &'a EventLog<S>,
         metastore: &'a Metastore,
     ) -> Self {
@@ -312,7 +313,7 @@ impl<'a, S: StorageIO + Send + Sync + 'static> BackupCoordinator<'a, S> {
 
         BackupManifest {
             version: BACKUP_FORMAT_VERSION,
-            created_at_ms: crate::wall_clock_ms().raw(),
+            created_at_ms: crate::blockstore::WallClockMs::now().raw(),
             blockstore: {
                 let max_cursor = bs
                     .shard_cursors

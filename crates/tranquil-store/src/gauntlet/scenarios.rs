@@ -6,8 +6,8 @@ use super::runner::{
     RestartPolicy, RunLimits, ShardCount, StoreConfig, WallMs, WriterConcurrency,
 };
 use super::workload::{
-    ByteRange, DidSpaceSize, KeySpaceSize, OpCount, OpWeights, RetentionMaxSecs, SizeDistribution,
-    ValueBytes, WorkloadModel,
+    AdvanceMaxSecs, ByteRange, DidSpaceSize, KeySpaceSize, OpCount, OpWeights, RetentionMaxSecs,
+    SizeDistribution, ValueBytes, WorkloadModel,
 };
 use crate::blockstore::{GroupCommitConfig, MAX_BLOCK_SIZE};
 use crate::sim::FaultConfig;
@@ -32,6 +32,7 @@ pub enum Scenario {
     ContendedWriters,
     FlakyDevice,
     ExternalCorruption,
+    RetentionTimeTravel,
 }
 
 impl Scenario {
@@ -55,6 +56,7 @@ impl Scenario {
             Self::ContendedWriters => "ContendedWriters",
             Self::FlakyDevice => "FlakyDevice",
             Self::ExternalCorruption => "ExternalCorruption",
+            Self::RetentionTimeTravel => "RetentionTimeTravel",
         }
     }
 
@@ -78,6 +80,7 @@ impl Scenario {
             Self::ContendedWriters => "contended-writers",
             Self::FlakyDevice => "flaky-device",
             Self::ExternalCorruption => "external-corruption",
+            Self::RetentionTimeTravel => "retention-time-travel",
         }
     }
 
@@ -115,6 +118,9 @@ impl Scenario {
             Self::ExternalCorruption => {
                 "Rare external data-file deletion mid-workload. Validates phantom-purge self-heal under chaos."
             }
+            Self::RetentionTimeTravel => {
+                "Eventlog retention under logical time travel: random multi-day AdvanceTime jumps interleaved with append/sync/retention. TOMBSTONE_BOUND across fake weeks."
+            }
         }
     }
 
@@ -145,6 +151,7 @@ impl Scenario {
         Self::ContendedWriters,
         Self::FlakyDevice,
         Self::ExternalCorruption,
+        Self::RetentionTimeTravel,
     ];
 }
 
@@ -219,6 +226,7 @@ pub fn config_for(scenario: Scenario, seed: Seed) -> GauntletConfig {
         Scenario::ContendedWriters => contended_writers(seed),
         Scenario::FlakyDevice => flaky_device(seed),
         Scenario::ExternalCorruption => external_corruption(seed),
+        Scenario::RetentionTimeTravel => retention_time_travel(seed),
     }
 }
 
@@ -251,6 +259,7 @@ fn block_workload(
         key_space,
         did_space: DidSpaceSize(32),
         retention_max_secs: RetentionMaxSecs(3600),
+        advance_max_secs: AdvanceMaxSecs(7200),
     }
 }
 
@@ -666,6 +675,7 @@ fn firehose_fanout(seed: Seed) -> GauntletConfig {
             key_space: KeySpaceSize(500),
             did_space: DidSpaceSize(64),
             retention_max_secs: RetentionMaxSecs(60),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(20_000),
         invariants: sim_invariants()
@@ -706,6 +716,7 @@ fn contended_readers(seed: Seed) -> GauntletConfig {
             key_space: KeySpaceSize(400),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(20_000),
         invariants: sim_invariants(),
@@ -773,6 +784,7 @@ fn contended_writers(seed: Seed) -> GauntletConfig {
             key_space: KeySpaceSize(1_000),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         },
         op_count: OpCount(20_000),
         invariants: sim_invariants(),
@@ -813,5 +825,44 @@ fn external_corruption(seed: Seed) -> GauntletConfig {
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),
         tolerate_op_errors: true,
+    }
+}
+
+fn retention_time_travel(seed: Seed) -> GauntletConfig {
+    GauntletConfig {
+        seed,
+        io: IoBackend::Simulated {
+            fault: FaultConfig::none(),
+        },
+        workload: WorkloadModel {
+            weights: OpWeights {
+                add: 20,
+                compact: 3,
+                checkpoint: 2,
+                append_event: 30,
+                sync_event_log: 15,
+                run_retention: 10,
+                advance_time: 20,
+                ..OpWeights::default()
+            },
+            size_distribution: SizeDistribution::Fixed(ValueBytes(96)),
+            collections: default_collections(),
+            key_space: KeySpaceSize(400),
+            did_space: DidSpaceSize(64),
+            retention_max_secs: RetentionMaxSecs(1_209_600),
+            advance_max_secs: AdvanceMaxSecs(1_209_600),
+        },
+        op_count: OpCount(1_200),
+        invariants: sim_invariants() | InvariantSet::MONOTONIC_SEQ | InvariantSet::TOMBSTONE_BOUND,
+        limits: RunLimits {
+            max_wall_ms: Some(WallMs(5 * 60_000)),
+        },
+        restart_policy: RestartPolicy::EveryNOps(OpInterval(400)),
+        store: sim_store(),
+        eventlog: Some(EventLogConfig {
+            max_segment_size: MaxSegmentSize(8 * 1024),
+        }),
+        writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
     }
 }

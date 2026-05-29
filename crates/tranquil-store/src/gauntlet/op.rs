@@ -22,6 +22,9 @@ pub struct PayloadSeed(pub u32);
 pub struct RetentionSecs(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AdvanceNanos(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
     Commit,
     Identity,
@@ -53,6 +56,9 @@ pub enum Op {
     SyncEventLog,
     RunRetention {
         max_age_secs: RetentionSecs,
+    },
+    AdvanceTime {
+        by: AdvanceNanos,
     },
     ReadRecord {
         collection: CollectionName,

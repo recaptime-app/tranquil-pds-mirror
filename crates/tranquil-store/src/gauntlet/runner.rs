@@ -18,9 +18,10 @@ use crate::blockstore::{
     BlockStoreConfig, CidBytes, CompactionError, GroupCommitConfig, TranquilBlockStore,
     hash_to_cid, hash_to_cid_bytes,
 };
+use crate::clock::{Clock, SimClock, SystemClock};
 use crate::eventlog::{
     DEFAULT_INDEX_INTERVAL, DidHash, EventLogWriter, EventTypeTag, MAX_EVENT_PAYLOAD, SegmentId,
-    SegmentManager, SegmentReader, TimestampMicros, ValidEvent,
+    SegmentManager, SegmentReader, ValidEvent,
 };
 use crate::io::{RealIO, StorageIO};
 use crate::sim::{FaultConfig, PristineGuard, SimulatedIO};
@@ -161,8 +162,8 @@ pub struct EventLogState<S: StorageIO + Send + Sync + 'static> {
     pub max_segment_size: u64,
 }
 
-pub struct Harness<S: StorageIO + Send + Sync + 'static> {
-    pub store: Arc<TranquilBlockStore<S>>,
+pub struct Harness<S: StorageIO + Send + Sync + 'static, C: Clock> {
+    pub store: Arc<TranquilBlockStore<S, C>>,
     pub eventlog: Option<EventLogState<S>>,
 }
 
@@ -172,8 +173,8 @@ pub struct WriteState<S: StorageIO + Send + Sync + 'static> {
     pub eventlog: Option<EventLogState<S>>,
 }
 
-pub struct SharedState<S: StorageIO + Send + Sync + 'static> {
-    pub store: Arc<TranquilBlockStore<S>>,
+pub struct SharedState<S: StorageIO + Send + Sync + 'static, C: Clock> {
+    pub store: Arc<TranquilBlockStore<S, C>>,
     pub write: tokio::sync::Mutex<WriteState<S>>,
 }
 
@@ -381,7 +382,7 @@ async fn run_inner_real_on_root(
     let segments_dir = segments_subdir(&root);
     let open = {
         let segments_dir = segments_dir.clone();
-        move |_attempt: usize| -> Result<Harness<RealIO>, String> {
+        move |_attempt: usize| -> Result<Harness<RealIO, SystemClock>, String> {
             let store = TranquilBlockStore::open(cfg.clone())
                 .map(Arc::new)
                 .map_err(|e| e.to_string())?;
@@ -396,7 +397,7 @@ async fn run_inner_real_on_root(
         }
     };
     if config.writer_concurrency.0 > 1 {
-        run_inner_generic_concurrent::<RealIO, _, _>(
+        run_inner_generic_concurrent::<RealIO, SystemClock, _, _>(
             config,
             ops,
             ops_counter,
@@ -406,10 +407,11 @@ async fn run_inner_real_on_root(
             || {},
             tolerate_op_errors,
             reopen_backoff,
+            SystemClock,
         )
         .await
     } else {
-        run_inner_generic::<RealIO, _, _>(
+        run_inner_generic::<RealIO, SystemClock, _, _>(
             config,
             ops,
             ops_counter,
@@ -419,6 +421,7 @@ async fn run_inner_real_on_root(
             || {},
             tolerate_op_errors,
             reopen_backoff,
+            SystemClock,
         )
         .await
     }
@@ -438,16 +441,22 @@ async fn run_inner_simulated(
     let eventlog_cfg = config.eventlog;
     let segments_dir = segments_subdir(dir.path());
     let sim: Arc<SimulatedIO> = Arc::new(SimulatedIO::new(config.seed.0, fault));
+    let clock = sim.clock();
     let sim_for_open = Arc::clone(&sim);
+    let clock_for_open = clock.clone();
     let open = {
         let segments_dir = segments_dir.clone();
-        move |attempt: usize| -> Result<Harness<Arc<SimulatedIO>>, String> {
+        move |attempt: usize| -> Result<Harness<Arc<SimulatedIO>, SimClock>, String> {
             let _pristine = PristineGuard::new(Arc::clone(&sim_for_open), attempt > 0);
             let factory_sim = Arc::clone(&sim_for_open);
             let make_io = move || Arc::clone(&factory_sim);
-            let store = TranquilBlockStore::<Arc<SimulatedIO>>::open_with_io(cfg.clone(), make_io)
-                .map(Arc::new)
-                .map_err(|e| e.to_string())?;
+            let store = TranquilBlockStore::<Arc<SimulatedIO>, SimClock>::open_with_io(
+                cfg.clone(),
+                make_io,
+                clock_for_open.clone(),
+            )
+            .map(Arc::new)
+            .map_err(|e| e.to_string())?;
             let eventlog = match eventlog_cfg {
                 None => None,
                 Some(elc) => Some(
@@ -465,7 +474,7 @@ async fn run_inner_simulated(
     let sim_for_crash = Arc::clone(&sim);
     let crash = move || sim_for_crash.crash();
     if config.writer_concurrency.0 > 1 {
-        run_inner_generic_concurrent::<Arc<SimulatedIO>, _, _>(
+        run_inner_generic_concurrent::<Arc<SimulatedIO>, SimClock, _, _>(
             config,
             ops,
             ops_counter,
@@ -475,10 +484,11 @@ async fn run_inner_simulated(
             crash,
             tolerate_errors,
             Duration::ZERO,
+            clock,
         )
         .await
     } else {
-        run_inner_generic::<Arc<SimulatedIO>, _, _>(
+        run_inner_generic::<Arc<SimulatedIO>, SimClock, _, _>(
             config,
             ops,
             ops_counter,
@@ -488,6 +498,7 @@ async fn run_inner_simulated(
             crash,
             tolerate_errors,
             Duration::ZERO,
+            clock,
         )
         .await
     }
@@ -517,7 +528,7 @@ pub(super) fn open_eventlog<S: StorageIO + Send + Sync + 'static>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_inner_generic<S, Open, Crash>(
+async fn run_inner_generic<S, C, Open, Crash>(
     config: GauntletConfig,
     op_stream: OpStream,
     ops_counter: Arc<AtomicUsize>,
@@ -527,16 +538,18 @@ async fn run_inner_generic<S, Open, Crash>(
     mut crash: Crash,
     tolerate_op_errors: bool,
     reopen_backoff: Duration,
+    clock: C,
 ) -> GauntletReport
 where
     S: StorageIO + Send + Sync + 'static,
-    Open: FnMut(usize) -> Result<Harness<S>, String>,
+    C: Clock,
+    Open: FnMut(usize) -> Result<Harness<S, C>, String>,
     Crash: FnMut(),
 {
     let mut oracle = Oracle::new();
     let mut violations: Vec<InvariantViolation> = Vec::new();
 
-    let mut harness: Option<Harness<S>> =
+    let mut harness: Option<Harness<S, C>> =
         match reopen_with_recovery(&mut open, &mut crash, tolerate_op_errors, reopen_backoff).await
         {
             Ok(h) => Some(h),
@@ -569,7 +582,7 @@ where
             .as_mut()
             .expect("harness invariant: present when halt_ops is false");
         let root_before = root;
-        match apply_op(live, &mut root, &mut oracle, op, &config.workload).await {
+        match apply_op(live, &mut root, &mut oracle, op, &config.workload, &clock).await {
             Ok(()) => {}
             Err(e) => {
                 if tolerate_op_errors {
@@ -750,7 +763,9 @@ pub(super) fn eventlog_snapshot<S: StorageIO + Send + Sync + 'static>(
     })
 }
 
-fn shutdown_harness<S: StorageIO + Send + Sync + 'static>(harness: &mut Option<Harness<S>>) {
+fn shutdown_harness<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    harness: &mut Option<Harness<S, C>>,
+) {
     if let Some(h) = harness.as_mut()
         && let Some(el) = h.eventlog.as_mut()
     {
@@ -762,15 +777,16 @@ fn shutdown_harness<S: StorageIO + Send + Sync + 'static>(harness: &mut Option<H
 
 const MAX_REOPEN_ATTEMPTS: usize = 5;
 
-async fn reopen_with_recovery<S, Open, Crash>(
+async fn reopen_with_recovery<S, C, Open, Crash>(
     open: &mut Open,
     crash: &mut Crash,
     tolerate: bool,
     backoff: Duration,
-) -> Result<Harness<S>, String>
+) -> Result<Harness<S, C>, String>
 where
     S: StorageIO + Send + Sync + 'static,
-    Open: FnMut(usize) -> Result<Harness<S>, String>,
+    C: Clock,
+    Open: FnMut(usize) -> Result<Harness<S, C>, String>,
     Crash: FnMut(),
 {
     let mut errors: Vec<String> = Vec::new();
@@ -808,8 +824,8 @@ fn sample_distinct(rng: &mut Lcg, n: usize, k: usize) -> Vec<usize> {
         .collect()
 }
 
-async fn run_quick_check<S: StorageIO + Send + Sync + 'static>(
-    store: &Arc<TranquilBlockStore<S>>,
+async fn run_quick_check<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &Arc<TranquilBlockStore<S, C>>,
     oracle: &Oracle,
     root: Option<Cid>,
     rng: &mut Lcg,
@@ -890,21 +906,21 @@ async fn run_quick_check<S: StorageIO + Send + Sync + 'static>(
     }
 }
 
-pub(super) async fn run_invariants<S: StorageIO + Send + Sync + 'static>(
-    store: &Arc<TranquilBlockStore<S>>,
+pub(super) async fn run_invariants<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &Arc<TranquilBlockStore<S, C>>,
     oracle: &Oracle,
     root: Option<Cid>,
     eventlog: Option<EventLogSnapshot>,
     set: InvariantSet,
 ) -> Vec<InvariantViolation> {
-    let ctx = InvariantCtx::<S> {
+    let ctx = InvariantCtx::<S, C> {
         store,
         oracle,
         root,
         eventlog: eventlog.as_ref(),
     };
     let mut out = Vec::new();
-    for inv in invariants_for::<S>(set) {
+    for inv in invariants_for::<S, C>(set) {
         if let Err(v) = inv.check(&ctx).await {
             out.push(v);
         }
@@ -912,8 +928,8 @@ pub(super) async fn run_invariants<S: StorageIO + Send + Sync + 'static>(
     out
 }
 
-fn snapshot_block_index<S: StorageIO + Send + Sync + 'static>(
-    store: &TranquilBlockStore<S>,
+fn snapshot_block_index<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &TranquilBlockStore<S, C>,
 ) -> Vec<(CidBytes, u32)> {
     let mut v: Vec<(CidBytes, u32)> = store
         .block_index()
@@ -972,8 +988,8 @@ fn diff_snapshots(pre: &[(CidBytes, u32)], post: &[(CidBytes, u32)]) -> Option<S
     ))
 }
 
-pub(super) async fn refresh_oracle_graph<S: StorageIO + Send + Sync + 'static>(
-    store: &Arc<TranquilBlockStore<S>>,
+pub(super) async fn refresh_oracle_graph<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &Arc<TranquilBlockStore<S, C>>,
     oracle: &mut Oracle,
     root: Option<Cid>,
 ) -> Result<(), String> {
@@ -1095,12 +1111,13 @@ fn did_hash_for_seed(seed: DidSeed) -> DidHash {
     DidHash::from_did(&format!("did:plc:gauntlet{:08x}", seed.0))
 }
 
-pub(super) async fn apply_op<S: StorageIO + Send + Sync + 'static>(
-    harness: &mut Harness<S>,
+pub(super) async fn apply_op<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    harness: &mut Harness<S, C>,
     root: &mut Option<Cid>,
     oracle: &mut Oracle,
     op: &Op,
     workload: &WorkloadModel,
+    clock: &C,
 ) -> Result<(), OpError> {
     match op {
         Op::AddRecord {
@@ -1165,8 +1182,8 @@ pub(super) async fn apply_op<S: StorageIO + Send + Sync + 'static>(
             let did_hash = did_hash_for_seed(*did_seed);
             let tag = event_kind_to_tag(*event_kind);
             let payload = event_payload_bytes(*payload_seed);
-            let ts_before = TimestampMicros::now().raw();
-            match el.writer.append(did_hash, tag, payload) {
+            let ts_before = clock.unix_micros().raw();
+            match el.writer.append_with_clock(did_hash, tag, payload, clock) {
                 Ok(seq) => {
                     oracle.record_event_append(EventExpectation {
                         seq,
@@ -1198,7 +1215,11 @@ pub(super) async fn apply_op<S: StorageIO + Send + Sync + 'static>(
             let Some(el) = harness.eventlog.as_mut() else {
                 return Ok(());
             };
-            run_retention(el, oracle, *max_age_secs).map_err(OpError::EventLogRetention)
+            run_retention(el, oracle, *max_age_secs, clock).map_err(OpError::EventLogRetention)
+        }
+        Op::AdvanceTime { by } => {
+            clock.advance(Duration::from_nanos(by.0));
+            Ok(())
         }
         Op::ReadRecord { collection, rkey } => {
             let Some(r) = *root else { return Ok(()) };
@@ -1228,8 +1249,8 @@ pub(super) async fn apply_op<S: StorageIO + Send + Sync + 'static>(
     }
 }
 
-fn externally_delete_data_file(
-    store: &std::sync::Arc<TranquilBlockStore<impl StorageIO + 'static>>,
+fn externally_delete_data_file<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &std::sync::Arc<TranquilBlockStore<S, C>>,
     pick: u32,
 ) -> Result<Vec<CidBytes>, OpError> {
     let active = store.block_index().read_write_cursor().map(|c| c.file_id);
@@ -1250,26 +1271,26 @@ fn externally_delete_data_file(
     }
 }
 
-fn run_retention<S: StorageIO + Send + Sync + 'static>(
+fn run_retention<S: StorageIO + Send + Sync + 'static, C: Clock>(
     el: &mut EventLogState<S>,
     oracle: &mut Oracle,
     max_age: RetentionSecs,
+    clock: &C,
 ) -> Result<(), String> {
     let sync_result = el.writer.sync().map_err(|e| e.to_string())?;
     el.manager
         .io()
         .sync_dir(el.segments_dir.as_path())
         .map_err(|e| e.to_string())?;
-    let _ = el.writer.rotate_if_needed();
     oracle.record_event_sync(sync_result.synced_through);
-    let active_id = sync_result.segment_id;
-    let now_us = TimestampMicros::now().raw();
+    let now_us = clock.unix_micros().raw();
     let max_age_us = u64::from(max_age.0).saturating_mul(1_000_000);
     let cutoff_us = now_us.saturating_sub(max_age_us);
     let segments = el.manager.list_segments().map_err(|e| e.to_string())?;
+    let active_id = segments.last().copied();
     segments
         .iter()
-        .take_while(|&&id| id != active_id)
+        .filter(|&&id| Some(id) != active_id)
         .try_for_each(|&id| -> Result<(), String> {
             let last_ts = segment_last_timestamp(&el.manager, id).map_err(|e| e.to_string())?;
             match last_ts {
@@ -1293,8 +1314,8 @@ fn segment_last_timestamp<S: StorageIO + Send + Sync + 'static>(
     Ok(events.last().map(|e: &ValidEvent| e.timestamp.raw()))
 }
 
-async fn add_record_atomic<S: StorageIO + Send + Sync + 'static>(
-    store: &Arc<TranquilBlockStore<S>>,
+async fn add_record_atomic<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &Arc<TranquilBlockStore<S, C>>,
     root: Option<Cid>,
     collection: &super::op::CollectionName,
     rkey: &super::op::RecordKey,
@@ -1330,8 +1351,8 @@ async fn add_record_atomic<S: StorageIO + Send + Sync + 'static>(
     Ok((new_root, true))
 }
 
-async fn delete_record_atomic<S: StorageIO + Send + Sync + 'static>(
-    store: &Arc<TranquilBlockStore<S>>,
+async fn delete_record_atomic<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &Arc<TranquilBlockStore<S, C>>,
     old_root: Cid,
     collection: &super::op::CollectionName,
     rkey: &super::op::RecordKey,
@@ -1387,8 +1408,8 @@ fn diff_obsolete(
         .map_err(OpError::from)
 }
 
-async fn commit_atomic<S: StorageIO + Send + Sync + 'static>(
-    store: &Arc<TranquilBlockStore<S>>,
+async fn commit_atomic<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &Arc<TranquilBlockStore<S, C>>,
     blocks: Vec<(CidBytes, Vec<u8>)>,
     obsolete: Vec<CidBytes>,
 ) -> Result<(), OpError> {
@@ -1404,8 +1425,8 @@ async fn commit_atomic<S: StorageIO + Send + Sync + 'static>(
 
 const COMPACT_LIVENESS_CEILING: f64 = 0.99;
 
-fn compact_by_liveness<S: StorageIO + Send + Sync + 'static>(
-    store: &TranquilBlockStore<S>,
+fn compact_by_liveness<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &TranquilBlockStore<S, C>,
 ) -> Result<(), OpError> {
     let liveness = store
         .compaction_liveness(0)
@@ -1425,10 +1446,11 @@ fn compact_by_liveness<S: StorageIO + Send + Sync + 'static>(
         })
 }
 
-async fn apply_op_concurrent<S: StorageIO + Send + Sync + 'static>(
-    shared: &Arc<SharedState<S>>,
+async fn apply_op_concurrent<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    shared: &Arc<SharedState<S, C>>,
     op: &Op,
     workload: &WorkloadModel,
+    clock: &C,
 ) -> Result<(), OpError> {
     match op {
         Op::AddRecord {
@@ -1497,12 +1519,12 @@ async fn apply_op_concurrent<S: StorageIO + Send + Sync + 'static>(
             let did_hash = did_hash_for_seed(*did_seed);
             let tag = event_kind_to_tag(*event_kind);
             let payload = event_payload_bytes(*payload_seed);
-            let ts_before = TimestampMicros::now().raw();
+            let ts_before = clock.unix_micros().raw();
             let mut state = shared.write.lock().await;
             let Some(el) = state.eventlog.as_mut() else {
                 return Ok(());
             };
-            match el.writer.append(did_hash, tag, payload) {
+            match el.writer.append_with_clock(did_hash, tag, payload, clock) {
                 Ok(seq) => {
                     let _ = el.writer.rotate_if_needed();
                     state.oracle.record_event_append(EventExpectation {
@@ -1540,7 +1562,11 @@ async fn apply_op_concurrent<S: StorageIO + Send + Sync + 'static>(
             let Some(el) = eventlog.as_mut() else {
                 return Ok(());
             };
-            run_retention(el, oracle, *max_age_secs).map_err(OpError::EventLogRetention)
+            run_retention(el, oracle, *max_age_secs, clock).map_err(OpError::EventLogRetention)
+        }
+        Op::AdvanceTime { by } => {
+            clock.advance(Duration::from_nanos(by.0));
+            Ok(())
         }
         Op::ReadRecord { collection, rkey } => {
             let r = { shared.write.lock().await.root };
@@ -1575,8 +1601,8 @@ async fn apply_op_concurrent<S: StorageIO + Send + Sync + 'static>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn writer_task<S: StorageIO + Send + Sync + 'static>(
-    shared: Arc<SharedState<S>>,
+async fn writer_task<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    shared: Arc<SharedState<S, C>>,
     ops: Arc<Vec<Op>>,
     index: Arc<AtomicUsize>,
     end: usize,
@@ -1584,6 +1610,7 @@ async fn writer_task<S: StorageIO + Send + Sync + 'static>(
     ops_counter: Arc<AtomicUsize>,
     op_errors_counter: Arc<AtomicUsize>,
     tolerate_op_errors: bool,
+    clock: C,
 ) -> Option<InvariantViolation> {
     loop {
         let idx = index.fetch_add(1, Ordering::Relaxed);
@@ -1591,7 +1618,7 @@ async fn writer_task<S: StorageIO + Send + Sync + 'static>(
             return None;
         }
         let op = &ops[idx];
-        match apply_op_concurrent(&shared, op, &workload).await {
+        match apply_op_concurrent(&shared, op, &workload, &clock).await {
             Ok(()) => {
                 ops_counter.fetch_max(idx + 1, Ordering::Relaxed);
             }
@@ -1633,7 +1660,7 @@ fn compute_chunks(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_inner_generic_concurrent<S, Open, Crash>(
+async fn run_inner_generic_concurrent<S, C, Open, Crash>(
     config: GauntletConfig,
     op_stream: OpStream,
     ops_counter: Arc<AtomicUsize>,
@@ -1643,10 +1670,12 @@ async fn run_inner_generic_concurrent<S, Open, Crash>(
     mut crash: Crash,
     tolerate_op_errors: bool,
     reopen_backoff: Duration,
+    clock: C,
 ) -> GauntletReport
 where
     S: StorageIO + Send + Sync + 'static,
-    Open: FnMut(usize) -> Result<Harness<S>, String>,
+    C: Clock,
+    Open: FnMut(usize) -> Result<Harness<S, C>, String>,
     Crash: FnMut(),
 {
     let ops: Vec<Op> = op_stream.into_vec();
@@ -1659,7 +1688,7 @@ where
     let mut sample_rng = Lcg::new(Seed(config.seed.0 ^ 0x5A5A_5A5A_5A5A_5A5A));
     let chunks = compute_chunks(config.restart_policy, total_ops, &mut restart_rng);
 
-    let mut harness: Option<Harness<S>> =
+    let mut harness: Option<Harness<S, C>> =
         match reopen_with_recovery(&mut open, &mut crash, tolerate_op_errors, reopen_backoff).await
         {
             Ok(h) => Some(h),
@@ -1711,6 +1740,7 @@ where
                 Arc::clone(&ops_counter),
                 Arc::clone(&op_errors_counter),
                 tolerate_op_errors,
+                clock.clone(),
             )));
         }
         for h in handles.drain(..) {
@@ -1916,20 +1946,26 @@ mod tests {
         attempts: Arc<AtomicUsize>,
         sim: Arc<SimulatedIO>,
         store_cfg: BlockStoreConfig,
-    ) -> impl FnMut(usize) -> Result<Harness<Arc<SimulatedIO>>, String> + Send + 'static {
-        move |_attempt: usize| -> Result<Harness<Arc<SimulatedIO>>, String> {
+        clock: SimClock,
+    ) -> impl FnMut(usize) -> Result<Harness<Arc<SimulatedIO>, SimClock>, String> + Send + 'static
+    {
+        move |_attempt: usize| -> Result<Harness<Arc<SimulatedIO>, SimClock>, String> {
             let n = attempts.fetch_add(1, Ordering::Relaxed);
             if n == 0 {
                 return Err("simulated EIO on initial open".to_string());
             }
             let factory_sim = Arc::clone(&sim);
             let make_io = move || Arc::clone(&factory_sim);
-            TranquilBlockStore::<Arc<SimulatedIO>>::open_with_io(store_cfg.clone(), make_io)
-                .map(|s| Harness {
-                    store: Arc::new(s),
-                    eventlog: None,
-                })
-                .map_err(|e| e.to_string())
+            TranquilBlockStore::<Arc<SimulatedIO>, SimClock>::open_with_io(
+                store_cfg.clone(),
+                make_io,
+                clock.clone(),
+            )
+            .map(|s| Harness {
+                store: Arc::new(s),
+                eventlog: None,
+            })
+            .map_err(|e| e.to_string())
         }
     }
 
@@ -1939,18 +1975,25 @@ mod tests {
         let cfg = minimal_config();
         let store_cfg = blockstore_config(dir.path(), &cfg.store);
         let sim: Arc<SimulatedIO> = Arc::new(SimulatedIO::pristine(0));
+        let clock = sim.clock();
         let attempts = Arc::new(AtomicUsize::new(0));
 
-        let report = run_inner_generic::<Arc<SimulatedIO>, _, _>(
+        let report = run_inner_generic::<Arc<SimulatedIO>, SimClock, _, _>(
             cfg,
             OpStream::empty(),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicUsize::new(0)),
-            flaky_open(Arc::clone(&attempts), Arc::clone(&sim), store_cfg),
+            flaky_open(
+                Arc::clone(&attempts),
+                Arc::clone(&sim),
+                store_cfg,
+                clock.clone(),
+            ),
             || {},
             true,
             Duration::ZERO,
+            clock,
         )
         .await;
 
@@ -1977,18 +2020,25 @@ mod tests {
         cfg.writer_concurrency = WriterConcurrency(2);
         let store_cfg = blockstore_config(dir.path(), &cfg.store);
         let sim: Arc<SimulatedIO> = Arc::new(SimulatedIO::pristine(0));
+        let clock = sim.clock();
         let attempts = Arc::new(AtomicUsize::new(0));
 
-        let report = run_inner_generic_concurrent::<Arc<SimulatedIO>, _, _>(
+        let report = run_inner_generic_concurrent::<Arc<SimulatedIO>, SimClock, _, _>(
             cfg,
             OpStream::empty(),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicUsize::new(0)),
-            flaky_open(Arc::clone(&attempts), Arc::clone(&sim), store_cfg),
+            flaky_open(
+                Arc::clone(&attempts),
+                Arc::clone(&sim),
+                store_cfg,
+                clock.clone(),
+            ),
             || {},
             true,
             Duration::ZERO,
+            clock,
         )
         .await;
 
@@ -2005,6 +2055,131 @@ mod tests {
         assert!(
             total >= 2,
             "expected at least one retry after first failure, attempts={total}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dst_retention_advances_logical_hours_in_real_milliseconds() {
+        use crate::gauntlet::op::AdvanceNanos;
+        use futures::stream::StreamExt;
+        use std::time::Instant;
+
+        const NANOS_PER_HOUR: u64 = 3600 * 1_000_000_000;
+
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let store_cfg = blockstore_config(dir.path(), &minimal_config().store);
+        let sim: Arc<SimulatedIO> = Arc::new(SimulatedIO::pristine(0xDADA));
+        let clock = sim.clock();
+
+        let store = {
+            let s = Arc::clone(&sim);
+            TranquilBlockStore::<Arc<SimulatedIO>, SimClock>::open_with_io(
+                store_cfg,
+                move || Arc::clone(&s),
+                clock.clone(),
+            )
+            .map(Arc::new)
+            .expect("open store")
+        };
+        let eventlog = open_eventlog(Arc::clone(&sim), segments_subdir(dir.path()), 200)
+            .expect("open eventlog");
+        let harness = Harness {
+            store,
+            eventlog: Some(eventlog),
+        };
+
+        let workload = WorkloadModel::default();
+        let appends: Vec<Op> = (0..80u32)
+            .map(|i| Op::AppendEvent {
+                did_seed: DidSeed(i),
+                event_kind: EventKind::Commit,
+                payload_seed: PayloadSeed(i),
+            })
+            .collect();
+
+        let start = Instant::now();
+        let (mut harness, mut root, mut oracle) = futures::stream::iter(appends)
+            .fold(
+                (harness, None::<Cid>, Oracle::new()),
+                |(mut h, mut r, mut o), op| {
+                    let clk = clock.clone();
+                    let wl = workload.clone();
+                    async move {
+                        apply_op(&mut h, &mut r, &mut o, &op, &wl, &clk)
+                            .await
+                            .expect("append op");
+                        (h, r, o)
+                    }
+                },
+            )
+            .await;
+
+        apply_op(
+            &mut harness,
+            &mut root,
+            &mut oracle,
+            &Op::SyncEventLog,
+            &workload,
+            &clock,
+        )
+        .await
+        .expect("sync");
+        let segments_before = harness
+            .eventlog
+            .as_ref()
+            .unwrap()
+            .manager
+            .list_segments()
+            .expect("list before");
+
+        apply_op(
+            &mut harness,
+            &mut root,
+            &mut oracle,
+            &Op::AdvanceTime {
+                by: AdvanceNanos(2 * NANOS_PER_HOUR),
+            },
+            &workload,
+            &clock,
+        )
+        .await
+        .expect("advance");
+        apply_op(
+            &mut harness,
+            &mut root,
+            &mut oracle,
+            &Op::RunRetention {
+                max_age_secs: RetentionSecs(3600),
+            },
+            &workload,
+            &clock,
+        )
+        .await
+        .expect("retention");
+        let elapsed = start.elapsed();
+
+        let segments_after = harness
+            .eventlog
+            .as_ref()
+            .unwrap()
+            .manager
+            .list_segments()
+            .expect("list after");
+
+        assert!(
+            segments_before.len() > 1,
+            "expected appends to seal old segments, got {} segment(s)",
+            segments_before.len()
+        );
+        assert!(
+            segments_after.len() < segments_before.len(),
+            "retention after advancing 2 logical hours must delete sealed segments older than the 1h cutoff: before={} after={}",
+            segments_before.len(),
+            segments_after.len()
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "advancing 2 logical hours took {elapsed:?} of wall time"
         );
     }
 }

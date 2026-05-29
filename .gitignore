@@ -4,5 +4,6 @@ target/
 result
 frontend/node_modules/
 frontend/dist/
+frontend/coverage/
 frontend/.pnpm-store
 frontend/.npmrc

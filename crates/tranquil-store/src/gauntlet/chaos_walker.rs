@@ -6,6 +6,7 @@ use jacquard_repo::mst::NodeData;
 use super::oracle::{hex_short, try_cid_to_fixed};
 use crate::StorageIO;
 use crate::blockstore::{CidBytes, TranquilBlockStore};
+use crate::clock::Clock;
 
 pub enum LookupResult {
     Found(Cid),
@@ -13,8 +14,8 @@ pub enum LookupResult {
     LostPath,
 }
 
-pub fn walk_mst_node_cids_tolerant<S: StorageIO + Send + Sync + 'static>(
-    store: &TranquilBlockStore<S>,
+pub fn walk_mst_node_cids_tolerant<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &TranquilBlockStore<S, C>,
     root: Cid,
     lost: &HashSet<CidBytes>,
 ) -> Result<Vec<CidBytes>, String> {
@@ -44,8 +45,8 @@ pub fn walk_mst_node_cids_tolerant<S: StorageIO + Send + Sync + 'static>(
     Ok(result)
 }
 
-pub fn mst_get_tolerant<S: StorageIO + Send + Sync + 'static>(
-    store: &TranquilBlockStore<S>,
+pub fn mst_get_tolerant<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &TranquilBlockStore<S, C>,
     root: Cid,
     target: &str,
     lost: &HashSet<CidBytes>,
@@ -76,8 +77,8 @@ pub fn mst_get_tolerant<S: StorageIO + Send + Sync + 'static>(
     }
 }
 
-fn read_node<S: StorageIO + Send + Sync + 'static>(
-    store: &TranquilBlockStore<S>,
+fn read_node<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &TranquilBlockStore<S, C>,
     cid_bytes: &CidBytes,
 ) -> Result<NodeData, String> {
     let bytes = match store.get_block_sync(cid_bytes) {

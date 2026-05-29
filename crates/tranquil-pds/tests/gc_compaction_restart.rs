@@ -5,7 +5,12 @@ use common::*;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
-fn run_compaction(store: &tranquil_store::blockstore::TranquilBlockStore) {
+fn run_compaction(
+    store: &tranquil_store::blockstore::TranquilBlockStore<
+        tranquil_store::RealIO,
+        tranquil_store::SystemClock,
+    >,
+) {
     let liveness = store.compaction_liveness(0).unwrap();
     liveness
         .iter()

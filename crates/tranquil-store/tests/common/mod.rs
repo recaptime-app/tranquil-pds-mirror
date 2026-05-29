@@ -3,12 +3,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use tranquil_store::RealIO;
 use tranquil_store::blockstore::{
     BlockStoreConfig, CidBytes, DEFAULT_MAX_FILE_SIZE, GroupCommitConfig, TranquilBlockStore,
 };
 use tranquil_store::eventlog::{EventLog, EventLogConfig};
 use tranquil_store::metastore::{Metastore, MetastoreConfig};
+use tranquil_store::{RealIO, SystemClock};
 use tranquil_types::{CidLink, Did, Handle};
 use uuid::Uuid;
 
@@ -78,11 +78,11 @@ pub fn with_runtime<F: FnOnce()>(f: F) {
     f();
 }
 
-pub fn advance_epoch(store: &TranquilBlockStore) {
+pub fn advance_epoch(store: &TranquilBlockStore<RealIO, SystemClock>) {
     store.apply_commit_blocking(vec![], vec![]).unwrap();
 }
 
-pub fn collect_all_dead(store: &TranquilBlockStore) -> HashSet<CidBytes> {
+pub fn collect_all_dead(store: &TranquilBlockStore<RealIO, SystemClock>) -> HashSet<CidBytes> {
     let result = store.collect_dead_blocks(0).unwrap();
     result
         .candidates
@@ -91,7 +91,7 @@ pub fn collect_all_dead(store: &TranquilBlockStore) -> HashSet<CidBytes> {
         .collect()
 }
 
-pub fn compact_all_sealed(store: &TranquilBlockStore) {
+pub fn compact_all_sealed(store: &TranquilBlockStore<RealIO, SystemClock>) {
     let Ok(files) = store.list_data_files() else {
         return;
     };
@@ -118,7 +118,7 @@ pub fn tiny_blockstore_config(dir: &std::path::Path) -> BlockStoreConfig {
     }
 }
 
-pub fn compact_by_liveness(store: &TranquilBlockStore) {
+pub fn compact_by_liveness(store: &TranquilBlockStore<RealIO, SystemClock>) {
     let liveness = store.compaction_liveness(0).unwrap();
     liveness
         .iter()
@@ -133,7 +133,7 @@ pub fn compact_by_liveness(store: &TranquilBlockStore) {
         });
 }
 
-pub fn compact_lowest_liveness(store: &TranquilBlockStore) {
+pub fn compact_lowest_liveness(store: &TranquilBlockStore<RealIO, SystemClock>) {
     let liveness = store.compaction_liveness(0).unwrap();
     let candidate = liveness
         .iter()
@@ -154,7 +154,10 @@ pub fn compact_lowest_liveness(store: &TranquilBlockStore) {
     }
 }
 
-pub fn collect_refcounts(store: &TranquilBlockStore, cids: &[CidBytes]) -> Vec<(u32, u32)> {
+pub fn collect_refcounts(
+    store: &TranquilBlockStore<RealIO, SystemClock>,
+    cids: &[CidBytes],
+) -> Vec<(u32, u32)> {
     cids.iter()
         .map(|cid| {
             let seed = u32::from_le_bytes([cid[4], cid[5], cid[6], cid[7]]);
@@ -169,7 +172,7 @@ pub fn collect_refcounts(store: &TranquilBlockStore, cids: &[CidBytes]) -> Vec<(
 }
 
 pub struct TestStores {
-    pub blockstore: TranquilBlockStore,
+    pub blockstore: TranquilBlockStore<RealIO, SystemClock>,
     pub eventlog: Arc<EventLog<RealIO>>,
     pub metastore: Metastore,
 }

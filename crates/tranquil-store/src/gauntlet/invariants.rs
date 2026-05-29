@@ -10,8 +10,9 @@ use super::oracle::{Oracle, hex_short, try_cid_to_fixed};
 use crate::blockstore::{
     BLOCK_HEADER_SIZE, CidBytes, CompactionError, TranquilBlockStore, hash_to_cid_bytes,
 };
+use crate::clock::Clock;
 use crate::eventlog::{EventSequence, SegmentId};
-use crate::io::{RealIO, StorageIO};
+use crate::io::StorageIO;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvariantSet(u32);
@@ -100,28 +101,28 @@ pub struct EventLogSnapshot {
     pub segment_last_ts: Vec<(SegmentId, u64)>,
 }
 
-pub struct InvariantCtx<'a, S: StorageIO + Send + Sync + 'static = RealIO> {
-    pub store: &'a Arc<TranquilBlockStore<S>>,
+pub struct InvariantCtx<'a, S: StorageIO + Send + Sync + 'static, C: Clock> {
+    pub store: &'a Arc<TranquilBlockStore<S, C>>,
     pub oracle: &'a Oracle,
     pub root: Option<Cid>,
     pub eventlog: Option<&'a EventLogSnapshot>,
 }
 
 #[async_trait]
-pub trait Invariant<S: StorageIO + Send + Sync + 'static>: Send + Sync {
+pub trait Invariant<S: StorageIO + Send + Sync + 'static, C: Clock>: Send + Sync {
     fn name(&self) -> &'static str;
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation>;
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation>;
 }
 
 pub struct RefcountConservation;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for RefcountConservation {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for RefcountConservation {
     fn name(&self) -> &'static str {
         "RefcountConservation"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let live: Vec<(String, CidBytes)> = ctx.oracle.live_cids_labeled();
         let live_set: HashSet<CidBytes> = live.iter().map(|(_, c)| *c).collect();
         let index: HashMap<CidBytes, u32> = ctx
@@ -162,12 +163,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for RefcountConservation
 pub struct Reachability;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for Reachability {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for Reachability {
     fn name(&self) -> &'static str {
         "Reachability"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let violations: Vec<String> = ctx
             .oracle
             .live_cids_labeled()
@@ -193,12 +194,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for Reachability {
 pub struct AckedWritePersistence;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for AckedWritePersistence {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for AckedWritePersistence {
     fn name(&self) -> &'static str {
         "AckedWritePersistence"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let Some(root) = ctx.root else {
             if ctx.oracle.live_count() == 0 {
                 return Ok(());
@@ -241,12 +242,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for AckedWritePersistenc
 pub struct ReadAfterWrite;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for ReadAfterWrite {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for ReadAfterWrite {
     fn name(&self) -> &'static str {
         "ReadAfterWrite"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let Some(root) = ctx.root else {
             return Ok(());
         };
@@ -295,12 +296,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for ReadAfterWrite {
 pub struct CompactionIdempotent;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for CompactionIdempotent {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for CompactionIdempotent {
     fn name(&self) -> &'static str {
         "CompactionIdempotent"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let store_a = ctx.store.clone();
         let first = tokio::task::spawn_blocking(move || compact_by_liveness(&store_a))
             .await
@@ -348,8 +349,8 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for CompactionIdempotent
     }
 }
 
-fn snapshot<S: StorageIO + Send + Sync + 'static>(
-    store: &Arc<TranquilBlockStore<S>>,
+fn snapshot<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &Arc<TranquilBlockStore<S, C>>,
 ) -> Vec<(CidBytes, u32)> {
     let mut v: Vec<(CidBytes, u32)> = store
         .block_index()
@@ -363,8 +364,8 @@ fn snapshot<S: StorageIO + Send + Sync + 'static>(
 
 const COMPACT_LIVENESS_CEILING: f64 = 0.99;
 
-fn compact_by_liveness<S: StorageIO + Send + Sync + 'static>(
-    store: &TranquilBlockStore<S>,
+fn compact_by_liveness<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &TranquilBlockStore<S, C>,
 ) -> Result<(), String> {
     let liveness = store
         .compaction_liveness(0)
@@ -386,12 +387,12 @@ fn compact_by_liveness<S: StorageIO + Send + Sync + 'static>(
 pub struct HintBackedByData;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for HintBackedByData {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for HintBackedByData {
     fn name(&self) -> &'static str {
         "HintBackedByData"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let store_c = ctx.store.clone();
         let result = tokio::task::spawn_blocking(move || {
             let data: std::collections::HashSet<_> = store_c
@@ -435,12 +436,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for HintBackedByData {
 pub struct IndexBlocksReadable;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for IndexBlocksReadable {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for IndexBlocksReadable {
     fn name(&self) -> &'static str {
         "IndexBlocksReadable"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let store_c = ctx.store.clone();
         let result = tokio::task::spawn_blocking(move || {
             let entries = store_c.block_index().live_entries_snapshot();
@@ -490,12 +491,12 @@ const INDEX_READABLE_REPORT_CAP: usize = 20;
 pub struct IndexBackedByDisk;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for IndexBackedByDisk {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for IndexBackedByDisk {
     fn name(&self) -> &'static str {
         "IndexBackedByDisk"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let store_c = ctx.store.clone();
         let result = tokio::task::spawn_blocking(move || {
             let disk: std::collections::HashSet<_> = store_c
@@ -544,12 +545,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for IndexBackedByDisk {
 pub struct NoOrphanFiles;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for NoOrphanFiles {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for NoOrphanFiles {
     fn name(&self) -> &'static str {
         "NoOrphanFiles"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let store_c = ctx.store.clone();
         let result = tokio::task::spawn_blocking(move || {
             let disk = store_c.list_data_files().map_err(|e| e.to_string())?;
@@ -606,12 +607,12 @@ impl Default for ByteBudget {
 }
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for ByteBudget {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for ByteBudget {
     fn name(&self) -> &'static str {
         "ByteBudget"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let store = ctx.store.clone();
         let factor = self.overhead_factor;
         let floor = self.floor_bytes;
@@ -643,12 +644,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for ByteBudget {
 pub struct ManifestEqualsReality;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for ManifestEqualsReality {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for ManifestEqualsReality {
     fn name(&self) -> &'static str {
         "ManifestEqualsReality"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let store = ctx.store.clone();
         tokio::task::spawn_blocking(move || {
             let listed = store.list_data_files().map_err(|e| e.to_string())?;
@@ -715,12 +716,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for ManifestEqualsRealit
 pub struct ChecksumCoverage;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for ChecksumCoverage {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for ChecksumCoverage {
     fn name(&self) -> &'static str {
         "ChecksumCoverage"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let violations: Vec<String> = ctx
             .oracle
             .live_cids_labeled()
@@ -761,12 +762,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for ChecksumCoverage {
 pub struct MonotonicSeq;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for MonotonicSeq {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for MonotonicSeq {
     fn name(&self) -> &'static str {
         "MonotonicSeq"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let Some(el) = ctx.eventlog else {
             return Ok(());
         };
@@ -819,12 +820,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for MonotonicSeq {
 pub struct FsyncOrdering;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for FsyncOrdering {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for FsyncOrdering {
     fn name(&self) -> &'static str {
         "FsyncOrdering"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let Some(el) = ctx.eventlog else {
             return Ok(());
         };
@@ -873,12 +874,12 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for FsyncOrdering {
 pub struct TombstoneBound;
 
 #[async_trait]
-impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for TombstoneBound {
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for TombstoneBound {
     fn name(&self) -> &'static str {
         "TombstoneBound"
     }
 
-    async fn check(&self, ctx: &InvariantCtx<'_, S>) -> Result<(), InvariantViolation> {
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let Some(el) = ctx.eventlog else {
             return Ok(());
         };
@@ -906,15 +907,15 @@ impl<S: StorageIO + Send + Sync + 'static> Invariant<S> for TombstoneBound {
     }
 }
 
-pub fn invariants_for<S: StorageIO + Send + Sync + 'static>(
+pub fn invariants_for<S: StorageIO + Send + Sync + 'static, C: Clock>(
     set: InvariantSet,
-) -> Vec<Box<dyn Invariant<S>>> {
+) -> Vec<Box<dyn Invariant<S, C>>> {
     let unknown = set.unknown_bits();
     assert!(
         unknown == 0,
         "invariants_for: unknown InvariantSet bits 0x{unknown:x}; all bits must map to an impl"
     );
-    let candidates: Vec<(InvariantSet, Box<dyn Invariant<S>>)> = vec![
+    let candidates: Vec<(InvariantSet, Box<dyn Invariant<S, C>>)> = vec![
         (
             InvariantSet::REFCOUNT_CONSERVATION,
             Box::new(RefcountConservation),

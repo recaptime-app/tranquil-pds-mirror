@@ -1,7 +1,9 @@
 use super::op::{
-    CollectionName, DidSeed, EventKind, FileChoice, Op, OpStream, PayloadSeed, RecordKey,
-    RetentionSecs, Seed, ValueSeed,
+    AdvanceNanos, CollectionName, DidSeed, EventKind, FileChoice, Op, OpStream, PayloadSeed,
+    RecordKey, RetentionSecs, Seed, ValueSeed,
 };
+
+const NANOS_PER_SEC: u64 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ValueBytes(pub u32);
@@ -24,6 +26,7 @@ pub struct OpWeights {
     pub read_record: u32,
     pub read_block: u32,
     pub external_delete_data_file: u32,
+    pub advance_time: u32,
 }
 
 impl OpWeights {
@@ -38,6 +41,7 @@ impl OpWeights {
             + self.read_record
             + self.read_block
             + self.external_delete_data_file
+            + self.advance_time
     }
 
     pub const fn touches_eventlog(&self) -> bool {
@@ -82,6 +86,9 @@ pub struct DidSpaceSize(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RetentionMaxSecs(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AdvanceMaxSecs(pub u32);
+
 #[derive(Debug, Clone)]
 pub struct WorkloadModel {
     pub weights: OpWeights,
@@ -90,6 +97,7 @@ pub struct WorkloadModel {
     pub key_space: KeySpaceSize,
     pub did_space: DidSpaceSize,
     pub retention_max_secs: RetentionMaxSecs,
+    pub advance_max_secs: AdvanceMaxSecs,
 }
 
 impl Default for WorkloadModel {
@@ -106,12 +114,14 @@ impl Default for WorkloadModel {
                 read_record: 0,
                 read_block: 0,
                 external_delete_data_file: 0,
+                advance_time: 0,
             },
             size_distribution: SizeDistribution::Fixed(ValueBytes(64)),
             collections: vec![CollectionName("app.bsky.feed.post".to_string())],
             key_space: KeySpaceSize(200),
             did_space: DidSpaceSize(32),
             retention_max_secs: RetentionMaxSecs(3600),
+            advance_max_secs: AdvanceMaxSecs(7200),
         }
     }
 }
@@ -142,6 +152,7 @@ impl WorkloadModel {
                 let t7 = t6 + w.run_retention;
                 let t8 = t7 + w.read_record;
                 let t9 = t8 + w.read_block;
+                let t10 = t9 + w.external_delete_data_file;
 
                 match bucket {
                     b if b < t1 => Op::AddRecord {
@@ -173,8 +184,14 @@ impl WorkloadModel {
                     b if b < t9 => Op::ReadBlock {
                         value_seed: ValueSeed(rng.next_u32()),
                     },
-                    _ => Op::ExternalDeleteDataFile {
+                    b if b < t10 => Op::ExternalDeleteDataFile {
                         choice: FileChoice(rng.next_u32()),
+                    },
+                    _ => Op::AdvanceTime {
+                        by: AdvanceNanos(
+                            u64::from(rng.next_u32() % self.advance_max_secs.0.max(1))
+                                * NANOS_PER_SEC,
+                        ),
                     },
                 }
             })

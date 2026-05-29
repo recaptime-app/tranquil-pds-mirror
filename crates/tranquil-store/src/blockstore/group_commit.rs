@@ -6,6 +6,7 @@ use std::thread;
 
 use parking_lot::RwLock;
 
+use crate::clock::{Clock, LogicalNanos};
 use crate::fsync_order::PostBlockstoreHook;
 
 use super::BlocksSynced;
@@ -224,13 +225,14 @@ impl Default for GroupCommitConfig {
     }
 }
 
-struct ShardContext {
+struct ShardContext<C: Clock> {
     shard_id: ShardId,
     epoch: EpochCounter,
     file_ids: Arc<FileIdAllocator>,
     active_files: Arc<ActiveFileSet>,
     hint_positions: Arc<ShardHintPositions>,
     verify_persisted_blocks: bool,
+    clock: C,
 }
 
 struct ActiveState {
@@ -256,8 +258,8 @@ struct SingleShardWriter {
 }
 
 impl SingleShardWriter {
-    fn spawn<S: StorageIO + 'static>(
-        ctx: ShardContext,
+    fn spawn<S: StorageIO + 'static, C: Clock>(
+        ctx: ShardContext<C>,
         manager: DataFileManager<S>,
         index: Arc<BlockIndex>,
         config: GroupCommitConfig,
@@ -359,20 +361,22 @@ pub struct GroupCommitWriter {
 }
 
 impl GroupCommitWriter {
-    pub fn spawn<S: StorageIO + 'static>(
+    pub fn spawn<S: StorageIO + 'static, C: Clock>(
         make_manager: impl Fn() -> DataFileManager<S>,
         index: Arc<BlockIndex>,
         config: GroupCommitConfig,
+        clock: C,
     ) -> Result<Self, CommitError> {
-        Self::spawn_sharded(make_manager, index, config, None, None, 1, None)
+        Self::spawn_sharded(make_manager, index, config, None, None, 1, None, clock)
     }
 
-    pub fn spawn_with_hook<S: StorageIO + 'static>(
+    pub fn spawn_with_hook<S: StorageIO + 'static, C: Clock>(
         make_manager: impl Fn() -> DataFileManager<S>,
         index: Arc<BlockIndex>,
         config: GroupCommitConfig,
         post_sync_hook: Option<Arc<dyn PostBlockstoreHook>>,
         initial_epoch: Option<CommitEpoch>,
+        clock: C,
     ) -> Result<Self, CommitError> {
         Self::spawn_sharded(
             make_manager,
@@ -382,10 +386,12 @@ impl GroupCommitWriter {
             initial_epoch,
             1,
             None,
+            clock,
         )
     }
 
-    pub fn spawn_sharded<F, S>(
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_sharded<F, S, C>(
         make_manager: F,
         index: Arc<BlockIndex>,
         config: GroupCommitConfig,
@@ -393,9 +399,11 @@ impl GroupCommitWriter {
         initial_epoch: Option<CommitEpoch>,
         shard_count: u8,
         checkpoint_positions: Option<&CheckpointPositions>,
+        clock: C,
     ) -> Result<Self, CommitError>
     where
         S: StorageIO + 'static,
+        C: Clock,
         F: Fn() -> DataFileManager<S>,
     {
         let shard_count = shard_count.max(1);
@@ -435,6 +443,7 @@ impl GroupCommitWriter {
                     active_files: Arc::clone(&active_files),
                     hint_positions: Arc::clone(&hint_positions),
                     verify_persisted_blocks: config.verify_persisted_blocks,
+                    clock: clock.clone(),
                 };
                 SingleShardWriter::spawn(
                     ctx,
@@ -843,23 +852,24 @@ fn handle_quiesce<S: StorageIO>(
     let _ = resume.blocking_recv();
 }
 
-fn maybe_checkpoint(
+fn maybe_checkpoint<C: Clock>(
     index: &BlockIndex,
     epoch: &EpochCounter,
     config: &GroupCommitConfig,
-    last_checkpoint: &mut std::time::Instant,
+    clock: &C,
+    last_checkpoint: &mut LogicalNanos,
     writes_since_checkpoint: &mut u64,
     hint_positions: &ShardHintPositions,
 ) {
-    let interval = std::time::Duration::from_millis(config.checkpoint_interval_ms);
-    let elapsed = last_checkpoint.elapsed() >= interval;
+    let interval = LogicalNanos::from_millis(config.checkpoint_interval_ms);
+    let elapsed = clock.monotonic().saturating_sub(*last_checkpoint) >= interval;
     let threshold = *writes_since_checkpoint >= config.checkpoint_write_threshold;
     if !elapsed && !threshold {
         return;
     }
     match index.write_checkpoint(epoch.current(), hint_positions) {
         Ok(()) => {
-            *last_checkpoint = std::time::Instant::now();
+            *last_checkpoint = clock.monotonic();
             *writes_since_checkpoint = 0;
             tracing::debug!("periodic checkpoint written");
         }
@@ -880,17 +890,17 @@ fn shutdown_checkpoint(
     }
 }
 
-fn commit_loop<S: StorageIO>(
+fn commit_loop<S: StorageIO, C: Clock>(
     manager: &DataFileManager<S>,
     index: &BlockIndex,
     receiver: &flume::Receiver<CommitRequest>,
     config: &GroupCommitConfig,
     state: &mut ActiveState,
     post_sync_hook: Option<&dyn PostBlockstoreHook>,
-    ctx: &ShardContext,
+    ctx: &ShardContext<C>,
 ) {
     let epoch = &ctx.epoch;
-    let mut last_checkpoint = std::time::Instant::now();
+    let mut last_checkpoint = ctx.clock.monotonic();
     let mut writes_since_checkpoint: u64 = 0;
 
     loop {
@@ -914,6 +924,7 @@ fn commit_loop<S: StorageIO>(
                     &ctx.active_files,
                     &ctx.hint_positions,
                     epoch,
+                    ctx.clock.wall_millis(),
                 );
                 let _ = response.send(result);
                 continue;
@@ -925,7 +936,7 @@ fn commit_loop<S: StorageIO>(
                 let repaired = index.repair_leaked_refcounts(
                     &leaked_cids,
                     epoch.current(),
-                    crate::wall_clock_ms(),
+                    ctx.clock.wall_millis(),
                 );
                 let _ = response.send(Ok(repaired));
                 continue;
@@ -985,6 +996,7 @@ fn commit_loop<S: StorageIO>(
                     &ctx.active_files,
                     &ctx.hint_positions,
                     epoch,
+                    ctx.clock.wall_millis(),
                 );
                 let _ = response.send(result);
             });
@@ -996,7 +1008,7 @@ fn commit_loop<S: StorageIO>(
                 let repaired = index.repair_leaked_refcounts(
                     &leaked_cids,
                     epoch.current(),
-                    crate::wall_clock_ms(),
+                    ctx.clock.wall_millis(),
                 );
                 let _ = response.send(Ok(repaired));
             });
@@ -1005,6 +1017,7 @@ fn commit_loop<S: StorageIO>(
             index,
             epoch,
             config,
+            &ctx.clock,
             &mut last_checkpoint,
             &mut writes_since_checkpoint,
             &ctx.hint_positions,
@@ -1032,13 +1045,13 @@ fn run_post_sync_hook(hook: Option<&dyn PostBlockstoreHook>, proof: &BlocksSynce
     }
 }
 
-fn drain_and_process_remaining<S: StorageIO>(
+fn drain_and_process_remaining<S: StorageIO, C: Clock>(
     manager: &DataFileManager<S>,
     index: &BlockIndex,
     receiver: &flume::Receiver<CommitRequest>,
     state: &mut ActiveState,
     post_sync_hook: Option<&dyn PostBlockstoreHook>,
-    ctx: &ShardContext,
+    ctx: &ShardContext<C>,
 ) {
     let epoch = &ctx.epoch;
     let mut entries: Vec<BatchEntry> = Vec::new();
@@ -1082,13 +1095,14 @@ fn drain_and_process_remaining<S: StorageIO>(
                 &ctx.active_files,
                 &ctx.hint_positions,
                 epoch,
+                ctx.clock.wall_millis(),
             );
             let _ = response.send(result);
         });
 
     repairs.into_iter().for_each(|(leaked_cids, response)| {
         let repaired =
-            index.repair_leaked_refcounts(&leaked_cids, epoch.current(), crate::wall_clock_ms());
+            index.repair_leaked_refcounts(&leaked_cids, epoch.current(), ctx.clock.wall_millis());
         let _ = response.send(Ok(repaired));
     });
 
@@ -1215,12 +1229,12 @@ fn rollback_batch<S: StorageIO>(
     });
 }
 
-fn process_batch<S: StorageIO>(
+fn process_batch<S: StorageIO, C: Clock>(
     manager: &DataFileManager<S>,
     index: &BlockIndex,
     batch: &[BatchEntry],
     state: &mut ActiveState,
-    ctx: &ShardContext,
+    ctx: &ShardContext<C>,
 ) -> Result<(HashMap<[u8; CID_SIZE], BlockLocation>, BlocksSynced), CommitError> {
     let epoch = &ctx.epoch;
     let batch_start = std::time::Instant::now();
@@ -1330,7 +1344,7 @@ fn process_batch<S: StorageIO>(
     let write_nanos = batch_start.elapsed().as_nanos() as u64;
 
     let current_epoch = epoch.current();
-    let now = crate::wall_clock_ms();
+    let now = ctx.clock.wall_millis();
 
     let rollback_on_err = |e: CommitError| -> CommitError {
         rollback_batch(manager, state, &rotations);
