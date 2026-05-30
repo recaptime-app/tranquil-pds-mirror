@@ -15,6 +15,10 @@ use tranquil_store::blockstore::{
 };
 use tranquil_store::{RealIO, SystemClock};
 
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const DAG_CBOR_CODEC: u64 = 0x71;
 const SHA2_256_CODE: u64 = 0x12;
 

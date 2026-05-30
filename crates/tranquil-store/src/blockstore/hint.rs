@@ -469,12 +469,16 @@ impl<'a, S: StorageIO> HintFileReader<'a, S> {
     }
 
     pub fn resume(io: &'a S, fd: FileId, position: HintOffset) -> io::Result<Self> {
-        assert!(
-            position.raw().is_multiple_of(HINT_RECORD_SIZE as u64),
-            "hint resume position {} not aligned to HINT_RECORD_SIZE {}",
-            position.raw(),
-            HINT_RECORD_SIZE,
-        );
+        if !position.raw().is_multiple_of(HINT_RECORD_SIZE as u64) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "hint resume position {} not aligned to HINT_RECORD_SIZE {}",
+                    position.raw(),
+                    HINT_RECORD_SIZE,
+                ),
+            ));
+        }
         let file_size = io.file_size(fd)?;
         Ok(Self {
             io,
@@ -1198,6 +1202,15 @@ mod tests {
             })
             .count();
         assert_eq!(valid_count, 2);
+    }
+
+    #[test]
+    fn hint_reader_resume_rejects_unaligned_position_without_panicking() {
+        let (sim, fd) = setup();
+        match HintFileReader::resume(&sim, fd, HintOffset::new(HINT_RECORD_SIZE as u64 + 5)) {
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidData),
+            Ok(_) => panic!("non-aligned resume position must surface as a recoverable error"),
+        }
     }
 
     #[test]

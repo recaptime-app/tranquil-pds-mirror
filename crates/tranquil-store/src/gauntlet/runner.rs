@@ -397,7 +397,7 @@ async fn run_inner_real_on_root(
         }
     };
     if config.writer_concurrency.0 > 1 {
-        run_inner_generic_concurrent::<RealIO, SystemClock, _, _>(
+        run_inner_generic_concurrent::<RealIO, SystemClock, _, _, _>(
             config,
             ops,
             ops_counter,
@@ -408,10 +408,11 @@ async fn run_inner_real_on_root(
             tolerate_op_errors,
             reopen_backoff,
             SystemClock,
+            |_| {},
         )
         .await
     } else {
-        run_inner_generic::<RealIO, SystemClock, _, _>(
+        run_inner_generic::<RealIO, SystemClock, _, _, _>(
             config,
             ops,
             ops_counter,
@@ -422,6 +423,7 @@ async fn run_inner_real_on_root(
             tolerate_op_errors,
             reopen_backoff,
             SystemClock,
+            |_| {},
         )
         .await
     }
@@ -473,8 +475,10 @@ async fn run_inner_simulated(
     };
     let sim_for_crash = Arc::clone(&sim);
     let crash = move || sim_for_crash.crash();
+    let sim_for_quiesce = Arc::clone(&sim);
+    let quiesce = move |on: bool| sim_for_quiesce.set_pristine_mode(on);
     if config.writer_concurrency.0 > 1 {
-        run_inner_generic_concurrent::<Arc<SimulatedIO>, SimClock, _, _>(
+        run_inner_generic_concurrent::<Arc<SimulatedIO>, SimClock, _, _, _>(
             config,
             ops,
             ops_counter,
@@ -485,10 +489,11 @@ async fn run_inner_simulated(
             tolerate_errors,
             Duration::ZERO,
             clock,
+            quiesce,
         )
         .await
     } else {
-        run_inner_generic::<Arc<SimulatedIO>, SimClock, _, _>(
+        run_inner_generic::<Arc<SimulatedIO>, SimClock, _, _, _>(
             config,
             ops,
             ops_counter,
@@ -499,6 +504,7 @@ async fn run_inner_simulated(
             tolerate_errors,
             Duration::ZERO,
             clock,
+            quiesce,
         )
         .await
     }
@@ -528,7 +534,7 @@ pub(super) fn open_eventlog<S: StorageIO + Send + Sync + 'static>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_inner_generic<S, C, Open, Crash>(
+async fn run_inner_generic<S, C, Open, Crash, Quiesce>(
     config: GauntletConfig,
     op_stream: OpStream,
     ops_counter: Arc<AtomicUsize>,
@@ -539,12 +545,14 @@ async fn run_inner_generic<S, C, Open, Crash>(
     tolerate_op_errors: bool,
     reopen_backoff: Duration,
     clock: C,
+    quiesce_faults: Quiesce,
 ) -> GauntletReport
 where
     S: StorageIO + Send + Sync + 'static,
     C: Clock,
     Open: FnMut(usize) -> Result<Harness<S, C>, String>,
     Crash: FnMut(),
+    Quiesce: Fn(bool),
 {
     let mut oracle = Oracle::new();
     let mut violations: Vec<InvariantViolation> = Vec::new();
@@ -617,6 +625,7 @@ where
                 let n = restarts_counter.fetch_add(1, Ordering::Relaxed) + 1;
                 let live = harness.as_ref().expect("just reopened");
                 let before = violations.len();
+                quiesce_faults(true);
                 violations.extend(
                     run_quick_check(
                         &live.store,
@@ -628,6 +637,7 @@ where
                     )
                     .await,
                 );
+                quiesce_faults(false);
                 if violations.len() > before {
                     halt_ops = true;
                 }
@@ -643,6 +653,7 @@ where
         }
     }
 
+    quiesce_faults(true);
     if !halt_ops && tolerate_op_errors && harness.is_some() {
         crash();
         oracle.record_crash();
@@ -1660,7 +1671,7 @@ fn compute_chunks(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_inner_generic_concurrent<S, C, Open, Crash>(
+async fn run_inner_generic_concurrent<S, C, Open, Crash, Quiesce>(
     config: GauntletConfig,
     op_stream: OpStream,
     ops_counter: Arc<AtomicUsize>,
@@ -1671,12 +1682,14 @@ async fn run_inner_generic_concurrent<S, C, Open, Crash>(
     tolerate_op_errors: bool,
     reopen_backoff: Duration,
     clock: C,
+    quiesce_faults: Quiesce,
 ) -> GauntletReport
 where
     S: StorageIO + Send + Sync + 'static,
     C: Clock,
     Open: FnMut(usize) -> Result<Harness<S, C>, String>,
     Crash: FnMut(),
+    Quiesce: Fn(bool),
 {
     let ops: Vec<Op> = op_stream.into_vec();
     let total_ops = ops.len();
@@ -1806,6 +1819,7 @@ where
                         let n = restarts_counter.fetch_add(1, Ordering::Relaxed) + 1;
                         let live = harness.as_ref().expect("just reopened");
                         let before = violations.len();
+                        quiesce_faults(true);
                         violations.extend(
                             run_quick_check(
                                 &live.store,
@@ -1817,6 +1831,7 @@ where
                             )
                             .await,
                         );
+                        quiesce_faults(false);
                         if violations.len() > before {
                             halt_ops = true;
                         }
@@ -1833,6 +1848,7 @@ where
         }
     }
 
+    quiesce_faults(true);
     if !halt_ops && tolerate_op_errors && harness.is_some() {
         crash();
         oracle.record_crash();
@@ -1978,7 +1994,7 @@ mod tests {
         let clock = sim.clock();
         let attempts = Arc::new(AtomicUsize::new(0));
 
-        let report = run_inner_generic::<Arc<SimulatedIO>, SimClock, _, _>(
+        let report = run_inner_generic::<Arc<SimulatedIO>, SimClock, _, _, _>(
             cfg,
             OpStream::empty(),
             Arc::new(AtomicUsize::new(0)),
@@ -1994,6 +2010,7 @@ mod tests {
             true,
             Duration::ZERO,
             clock,
+            |_| {},
         )
         .await;
 
@@ -2023,7 +2040,7 @@ mod tests {
         let clock = sim.clock();
         let attempts = Arc::new(AtomicUsize::new(0));
 
-        let report = run_inner_generic_concurrent::<Arc<SimulatedIO>, SimClock, _, _>(
+        let report = run_inner_generic_concurrent::<Arc<SimulatedIO>, SimClock, _, _, _>(
             cfg,
             OpStream::empty(),
             Arc::new(AtomicUsize::new(0)),
@@ -2039,6 +2056,7 @@ mod tests {
             true,
             Duration::ZERO,
             clock,
+            |_| {},
         )
         .await;
 

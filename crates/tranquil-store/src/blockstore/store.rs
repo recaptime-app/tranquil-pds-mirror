@@ -954,6 +954,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reopen_recovers_from_torn_hint_tail_without_aborting() {
+        use crate::blockstore::HINT_RECORD_SIZE;
+        use std::io::Write;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        let index_dir = tmp.path().join("index");
+        let cfg = || BlockStoreConfig::new(data_dir.clone(), index_dir.clone());
+
+        let payload_a = b"alpha-block-payload".to_vec();
+        let payload_b = b"bravo-block-payload".to_vec();
+        let cid_a = crate::blockstore::hash_to_cid_bytes(&payload_a);
+        let cid_b = crate::blockstore::hash_to_cid_bytes(&payload_b);
+
+        {
+            let store = TranquilBlockStore::open(cfg()).unwrap();
+            store
+                .apply_commit_blocking(vec![(cid_a, payload_a.clone())], vec![])
+                .unwrap();
+            store.apply_commit_blocking(vec![], vec![]).unwrap();
+        }
+
+        let hint_path = std::fs::read_dir(&data_dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().and_then(|s| s.to_str()) == Some("tqh"))
+            .expect("active hint file must exist after commit");
+
+        let clean = std::fs::metadata(&hint_path).unwrap().len();
+        assert_eq!(
+            clean % HINT_RECORD_SIZE as u64,
+            0,
+            "precondition: synced hint file must be record-aligned, got {clean}"
+        );
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&hint_path)
+                .unwrap();
+            f.write_all(&[0x5Au8; 50]).unwrap();
+            f.sync_all().unwrap();
+        }
+        assert_eq!(
+            std::fs::metadata(&hint_path).unwrap().len() % HINT_RECORD_SIZE as u64,
+            50,
+            "torn tail must leave a non-aligned hint file"
+        );
+
+        {
+            let store = TranquilBlockStore::open(cfg()).unwrap();
+            assert!(
+                store.get_block_sync(&cid_a).unwrap().is_some(),
+                "block A lost after torn-tail recovery"
+            );
+            store
+                .apply_commit_blocking(vec![(cid_b, payload_b.clone())], vec![])
+                .unwrap();
+        }
+
+        let healed = std::fs::metadata(&hint_path).unwrap().len();
+        assert_eq!(
+            healed % HINT_RECORD_SIZE as u64,
+            0,
+            "recovery must realign the hint file, got {healed}"
+        );
+
+        {
+            let store = TranquilBlockStore::open(cfg()).unwrap();
+            assert!(
+                store.get_block_sync(&cid_a).unwrap().is_some(),
+                "block A lost across second reopen"
+            );
+            assert!(
+                store.get_block_sync(&cid_b).unwrap().is_some(),
+                "block B lost across second reopen"
+            );
+        }
+    }
+
     fn instant_policy(max_attempts: u8) -> OpenRetryPolicy {
         OpenRetryPolicy {
             max_attempts: NonZeroU8::new(max_attempts).expect("max_attempts must be nonzero"),

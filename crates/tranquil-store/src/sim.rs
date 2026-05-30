@@ -376,6 +376,10 @@ impl SimulatedIO {
         self.pristine_mode.store(on, Ordering::Relaxed);
     }
 
+    pub fn pristine_mode(&self) -> bool {
+        self.pristine_mode.load(Ordering::Relaxed)
+    }
+
     fn jitter(&self) {
         let max_ns = self.effective_fault_config().latency_distribution_ns.0;
         let extra_ns = match max_ns {
@@ -458,18 +462,20 @@ impl SimulatedIO {
 
 pub struct PristineGuard {
     sim: Arc<SimulatedIO>,
+    prev: bool,
 }
 
 impl PristineGuard {
     pub fn new(sim: Arc<SimulatedIO>, on: bool) -> Self {
-        sim.set_pristine_mode(on);
-        Self { sim }
+        let prev = sim.pristine_mode();
+        sim.set_pristine_mode(on || prev);
+        Self { sim, prev }
     }
 }
 
 impl Drop for PristineGuard {
     fn drop(&mut self) {
-        self.sim.set_pristine_mode(false);
+        self.sim.set_pristine_mode(self.prev);
     }
 }
 

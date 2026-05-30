@@ -4,7 +4,7 @@ use super::runner::{
     GauntletConfig, IoBackend, MaxFileSize, OpInterval, RestartPolicy, RunLimits, ShardCount,
     WallMs, WriterConcurrency,
 };
-use super::workload::{KeySpaceSize, OpCount, SizeDistribution, ValueBytes};
+use super::workload::{AdvanceMaxSecs, KeySpaceSize, OpCount, SizeDistribution, ValueBytes};
 use crate::sim::FaultConfig;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -26,6 +26,10 @@ pub struct ConfigOverrides {
     pub fault_density_uniform: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_every_n_ops: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advance_time: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advance_max_secs: Option<u32>,
     #[serde(default, skip_serializing_if = "StoreOverrides::is_empty")]
     pub store: StoreOverrides,
 }
@@ -109,6 +113,12 @@ impl ConfigOverrides {
             } else {
                 RestartPolicy::EveryNOps(OpInterval(n))
             };
+        }
+        if let Some(n) = self.advance_time {
+            cfg.workload.weights.advance_time = n;
+        }
+        if let Some(n) = self.advance_max_secs {
+            cfg.workload.advance_max_secs = AdvanceMaxSecs(n.max(1));
         }
         if let Some(n) = self.store.max_file_size {
             cfg.store.max_file_size = MaxFileSize(n);
@@ -223,6 +233,22 @@ mod tests {
         };
         o.apply_to(&mut cfg);
         assert!(matches!(cfg.io, IoBackend::Real));
+    }
+
+    #[test]
+    fn advance_time_overrides_inject_time_travel() {
+        use crate::gauntlet::op::Seed;
+        use crate::gauntlet::scenarios::{Scenario, config_for};
+        let mut cfg = config_for(Scenario::FirehoseFanout, Seed(1));
+        assert_eq!(cfg.workload.weights.advance_time, 0);
+        let o = ConfigOverrides {
+            advance_time: Some(40),
+            advance_max_secs: Some(1_209_600),
+            ..ConfigOverrides::default()
+        };
+        o.apply_to(&mut cfg);
+        assert_eq!(cfg.workload.weights.advance_time, 40);
+        assert_eq!(cfg.workload.advance_max_secs.0, 1_209_600);
     }
 
     #[test]

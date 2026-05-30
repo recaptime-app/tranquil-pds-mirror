@@ -14,6 +14,10 @@ use tranquil_store::gauntlet::{
     shrink::{DEFAULT_MAX_SHRINK_ITERATIONS, shrink_failure},
 };
 
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const MAX_HOURS: f64 = 1.0e6;
 const DEFAULT_SWEEP_RUN_CAP: u64 = 10_000;
 
@@ -223,6 +227,10 @@ struct SweepAxes {
     commit_batch_size: Vec<usize>,
     #[serde(default)]
     max_file_size: Vec<u64>,
+    #[serde(default)]
+    advance_time: Vec<u32>,
+    #[serde(default)]
+    advance_max_secs: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -235,6 +243,8 @@ struct SweepAxisValues {
     restart_every_n_ops: Option<usize>,
     commit_batch_size: Option<usize>,
     max_file_size: Option<u64>,
+    advance_time: Option<u32>,
+    advance_max_secs: Option<u32>,
 }
 
 impl SweepAxisValues {
@@ -263,49 +273,57 @@ impl SweepAxisValues {
         if let Some(v) = self.max_file_size {
             o.store.max_file_size = Some(v);
         }
+        if let Some(v) = self.advance_time {
+            o.advance_time = Some(v);
+        }
+        if let Some(v) = self.advance_max_secs {
+            o.advance_max_secs = Some(v);
+        }
     }
 }
 
 impl SweepAxes {
     fn axis_values(&self) -> Vec<SweepAxisValues> {
-        expand(&self.writer_concurrency)
-            .into_iter()
-            .flat_map(|wc| {
-                expand(&self.key_space).into_iter().flat_map(move |ks| {
-                    expand(&self.value_bytes).into_iter().flat_map(move |vb| {
-                        expand(&self.fault_density_scale)
-                            .into_iter()
-                            .flat_map(move |fds| {
-                                expand(&self.fault_density_uniform).into_iter().flat_map(
-                                    move |fdu| {
-                                        expand(&self.restart_every_n_ops).into_iter().flat_map(
-                                            move |rc| {
-                                                expand(&self.commit_batch_size)
-                                                    .into_iter()
-                                                    .flat_map(move |cb| {
-                                                        expand(&self.max_file_size).into_iter().map(
-                                                            move |mfs| SweepAxisValues {
-                                                                writer_concurrency: wc,
-                                                                key_space: ks,
-                                                                value_bytes: vb,
-                                                                fault_density_scale: fds,
-                                                                fault_density_uniform: fdu,
-                                                                restart_every_n_ops: rc,
-                                                                commit_batch_size: cb,
-                                                                max_file_size: mfs,
-                                                            },
-                                                        )
-                                                    })
-                                            },
-                                        )
-                                    },
-                                )
-                            })
-                    })
-                })
-            })
-            .collect()
+        let base = vec![SweepAxisValues::default()];
+        let base = cross(base, &self.writer_concurrency, |a, v| a.writer_concurrency = Some(v));
+        let base = cross(base, &self.key_space, |a, v| a.key_space = Some(v));
+        let base = cross(base, &self.value_bytes, |a, v| a.value_bytes = Some(v));
+        let base = cross(base, &self.fault_density_scale, |a, v| {
+            a.fault_density_scale = Some(v)
+        });
+        let base = cross(base, &self.fault_density_uniform, |a, v| {
+            a.fault_density_uniform = Some(v)
+        });
+        let base = cross(base, &self.restart_every_n_ops, |a, v| {
+            a.restart_every_n_ops = Some(v)
+        });
+        let base = cross(base, &self.commit_batch_size, |a, v| {
+            a.commit_batch_size = Some(v)
+        });
+        let base = cross(base, &self.max_file_size, |a, v| a.max_file_size = Some(v));
+        let base = cross(base, &self.advance_time, |a, v| a.advance_time = Some(v));
+        cross(base, &self.advance_max_secs, |a, v| {
+            a.advance_max_secs = Some(v)
+        })
     }
+}
+
+fn cross<T: Copy>(
+    acc: Vec<SweepAxisValues>,
+    values: &[T],
+    set: impl Fn(&mut SweepAxisValues, T) + Copy,
+) -> Vec<SweepAxisValues> {
+    acc.into_iter()
+        .flat_map(|base| {
+            expand(values).into_iter().map(move |opt| {
+                let mut next = base;
+                if let Some(v) = opt {
+                    set(&mut next, v);
+                }
+                next
+            })
+        })
+        .collect()
 }
 
 fn expand<T: Copy>(values: &[T]) -> Vec<Option<T>> {
@@ -613,7 +631,22 @@ fn install_interrupt(rt: &Runtime) -> Arc<AtomicBool> {
     flag
 }
 
+fn raise_fd_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0;
+    if read && lim.rlim_cur < lim.rlim_max {
+        lim.rlim_cur = lim.rlim_max;
+        unsafe {
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+        }
+    }
+}
+
 fn main() -> ExitCode {
+    raise_fd_limit();
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

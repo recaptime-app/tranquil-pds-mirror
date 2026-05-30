@@ -14,7 +14,7 @@ use crate::io::{FileId, OpenOptions, StorageIO};
 
 use super::data_file::{CID_SIZE, DataFileWriter, ReadBlockRecord, decode_block_record};
 use super::hash_index::{BlockIndex, BlockIndexError, CheckpointPositions};
-use super::hint::{HintFileWriter, hint_file_path};
+use super::hint::{HINT_RECORD_SIZE, HintFileWriter, hint_file_path};
 use super::manager::DataFileManager;
 use super::types::{
     BlockLocation, BlockOffset, BlockstoreSnapshot, CommitEpoch, DataFileId, EpochCounter,
@@ -605,13 +605,18 @@ fn initialize_active_state<S: StorageIO>(
             let hint_path = hint_file_path(data_dir, wc.file_id);
             let hint_fd = manager.io().open(&hint_path, OpenOptions::read_write())?;
             let hint_size = manager.io().file_size(hint_fd)?;
+            let aligned_hint = hint_size - hint_size % HINT_RECORD_SIZE as u64;
+            if aligned_hint != hint_size {
+                manager.io().truncate(hint_fd, aligned_hint)?;
+                manager.io().sync(hint_fd)?;
+            }
 
             Ok(ActiveState {
                 file_id: wc.file_id,
                 fd,
                 position,
                 hint_fd,
-                hint_position: HintOffset::new(hint_size),
+                hint_position: HintOffset::new(aligned_hint),
             })
         }
         None => {
