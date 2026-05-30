@@ -248,6 +248,33 @@ export class PlcOps {
     };
   }
 
+  async getMatchingKeyPair(
+    privateKeyString: string,
+    acceptableDidKeys: readonly string[],
+  ): Promise<KeypairInfo | null> {
+    const curves: readonly KeyCurve[] = ["secp256k1", "p256"];
+    const results = await Promise.allSettled(
+      curves.map((curve) => this.getKeyPair(privateKeyString, curve)),
+    );
+    const candidates = results
+      .filter(
+        (r): r is PromiseFulfilledResult<KeypairInfo> =>
+          r.status === "fulfilled",
+      )
+      .map((r) => r.value);
+    if (candidates.length === 0) {
+      const rejection = results.find(
+        (r): r is PromiseRejectedResult => r.status === "rejected",
+      );
+      throw rejection?.reason ?? new Error("Unrecognized key format");
+    }
+    return (
+      candidates.find((info) =>
+        acceptableDidKeys.includes(info.didPublicKey)
+      ) ?? null
+    );
+  }
+
   async signAndPublishNewOp(
     did: string,
     signingRotationKey: PrivateKey,

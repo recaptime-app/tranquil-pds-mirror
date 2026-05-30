@@ -8,7 +8,7 @@
   ],
   "grant_types": ["authorization_code", "refresh_token"],
   "response_types": ["code"],
-  "scope": "atproto transition:generic repo:* blob:*/* rpc:* rpc:com.atproto.server.createAccount?aud=* account:*?action=manage identity:*",
+  "scope": "atproto transition:generic repo:* blob:*/* rpc:* rpc:com.atproto.server.createAccount?aud=* account:*?action=manage account:repo?action=manage identity:*",
   "token_endpoint_auth_method": "none",
   "application_type": "web",
   "dpop_bound_access_tokens": true

@@ -209,11 +209,15 @@ export function createOfflineInboundMigrationFlow() {
     }
 
     try {
-      userRotationKeypair = await plcOps.getKeyPair(state.rotationKey.trim());
       const { lastOperation } = await plcOps.getLastPlcOpFromPlc(state.userDid);
       const currentRotationKeys = lastOperation.rotationKeys || [];
 
-      if (!currentRotationKeys.includes(userRotationKeypair.didPublicKey)) {
+      userRotationKeypair = await plcOps.getMatchingKeyPair(
+        state.rotationKey.trim(),
+        currentRotationKeys,
+      );
+
+      if (!userRotationKeypair) {
         state.rotationKeyDidKey = "";
         return false;
       }

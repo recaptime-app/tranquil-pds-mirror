@@ -144,6 +144,45 @@ describe("migration/plc-ops", () => {
     });
   });
 
+  describe("getMatchingKeyPair", () => {
+    it("resolves a P-256 key supplied as hex against its did:key", async () => {
+      const keypair = await P256PrivateKeyExportable.createKeypair();
+      const rawHex = await keypair.exportPrivateKey("rawHex");
+      const did = await keypair.exportPublicKey("did");
+
+      const result = await plcOps.getMatchingKeyPair(rawHex, [did]);
+
+      expect(result?.didPublicKey).toBe(did);
+    });
+
+    it("resolves a secp256k1 key supplied as hex against its did:key", async () => {
+      const keypair = await Secp256k1PrivateKeyExportable.createKeypair();
+      const rawHex = await keypair.exportPrivateKey("rawHex");
+      const did = await keypair.exportPublicKey("did");
+
+      const result = await plcOps.getMatchingKeyPair(rawHex, [did]);
+
+      expect(result?.didPublicKey).toBe(did);
+    });
+
+    it("returns null when no curve matches the accepted keys", async () => {
+      const keypair = await P256PrivateKeyExportable.createKeypair();
+      const rawHex = await keypair.exportPrivateKey("rawHex");
+
+      const result = await plcOps.getMatchingKeyPair(rawHex, [
+        "did:key:zQ3shqPwo8CSE8zNXEyEpN4ASEBCCNeUFQq8Lrw3zkAJYB7SB",
+      ]);
+
+      expect(result).toBeNull();
+    });
+
+    it("throws on unparseable input", async () => {
+      await expect(
+        plcOps.getMatchingKeyPair("not-a-valid-key", []),
+      ).rejects.toThrow();
+    });
+  });
+
   describe("getKeyPair - JWK format", () => {
     it("imports secp256k1 JWK with d parameter", async () => {
       const keypair = await Secp256k1PrivateKeyExportable.createKeypair();
