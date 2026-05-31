@@ -26,6 +26,7 @@ pub enum Scenario {
     ModerateFaults,
     AggressiveFaults,
     TornPages,
+    MisdirectedWrites,
     Fsyncgate,
     FirehoseFanout,
     ContendedReaders,
@@ -50,6 +51,7 @@ impl Scenario {
             Self::ModerateFaults => "ModerateFaults",
             Self::AggressiveFaults => "AggressiveFaults",
             Self::TornPages => "TornPages",
+            Self::MisdirectedWrites => "MisdirectedWrites",
             Self::Fsyncgate => "Fsyncgate",
             Self::FirehoseFanout => "FirehoseFanout",
             Self::ContendedReaders => "ContendedReaders",
@@ -74,6 +76,7 @@ impl Scenario {
             Self::ModerateFaults => "moderate-faults",
             Self::AggressiveFaults => "aggressive-faults",
             Self::TornPages => "torn-pages",
+            Self::MisdirectedWrites => "misdirected-writes",
             Self::Fsyncgate => "fsyncgate",
             Self::FirehoseFanout => "firehose-fanout",
             Self::ContendedReaders => "contended-readers",
@@ -104,6 +107,7 @@ impl Scenario {
                 "Simulated IO with aggressive fault config. CrashAtSyscall restarts."
             }
             Self::TornPages => "Torn-page faults only, 20k ops.",
+            Self::MisdirectedWrites => "Misdirected-write faults only, 20k ops.",
             Self::Fsyncgate => "Fsync-drop faults only, 10k ops.",
             Self::FirehoseFanout => {
                 "Eventlog-heavy workload with FSYNC_ORDERING / MONOTONIC_SEQ / TOMBSTONE_BOUND invariants."
@@ -145,6 +149,7 @@ impl Scenario {
         Self::ModerateFaults,
         Self::AggressiveFaults,
         Self::TornPages,
+        Self::MisdirectedWrites,
         Self::Fsyncgate,
         Self::FirehoseFanout,
         Self::ContendedReaders,
@@ -220,6 +225,7 @@ pub fn config_for(scenario: Scenario, seed: Seed) -> GauntletConfig {
         Scenario::ModerateFaults => moderate_faults(seed),
         Scenario::AggressiveFaults => aggressive_faults(seed),
         Scenario::TornPages => torn_pages(seed),
+        Scenario::MisdirectedWrites => misdirected_writes(seed),
         Scenario::Fsyncgate => fsyncgate(seed),
         Scenario::FirehoseFanout => firehose_fanout(seed),
         Scenario::ContendedReaders => contended_readers(seed),
@@ -627,6 +633,26 @@ fn torn_pages(seed: Seed) -> GauntletConfig {
             max_wall_ms: Some(WallMs(5 * 60_000)),
         },
         restart_policy: RestartPolicy::CrashAtSyscall(OpInterval(1_000)),
+        store: sim_store(),
+        eventlog: None,
+        writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
+    }
+}
+
+fn misdirected_writes(seed: Seed) -> GauntletConfig {
+    GauntletConfig {
+        seed,
+        io: IoBackend::Simulated {
+            fault: FaultConfig::misdirected_only(),
+        },
+        workload: sim_microbench_workload(),
+        op_count: OpCount(20_000),
+        invariants: InvariantSet::MST_REPAIRABLE,
+        limits: RunLimits {
+            max_wall_ms: Some(WallMs(5 * 60_000)),
+        },
+        restart_policy: RestartPolicy::Never,
         store: sim_store(),
         eventlog: None,
         writer_concurrency: WriterConcurrency(1),

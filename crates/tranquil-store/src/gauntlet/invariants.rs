@@ -35,6 +35,7 @@ impl InvariantSet {
     pub const INDEX_BACKED_BY_DISK: Self = Self(1 << 13);
     pub const HINT_BACKED_BY_DATA: Self = Self(1 << 14);
     pub const INDEX_BLOCKS_READABLE: Self = Self(1 << 15);
+    pub const MST_REPAIRABLE: Self = Self(1 << 16);
 
     const ALL_KNOWN: u32 = Self::REFCOUNT_CONSERVATION.0
         | Self::REACHABILITY.0
@@ -51,7 +52,8 @@ impl InvariantSet {
         | Self::TOMBSTONE_BOUND.0
         | Self::INDEX_BACKED_BY_DISK.0
         | Self::HINT_BACKED_BY_DATA.0
-        | Self::INDEX_BLOCKS_READABLE.0;
+        | Self::INDEX_BLOCKS_READABLE.0
+        | Self::MST_REPAIRABLE.0;
 
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
@@ -287,6 +289,62 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for ReadAft
         } else {
             Err(InvariantViolation {
                 invariant: "ReadAfterWrite",
+                detail: violations.join("; "),
+            })
+        }
+    }
+}
+
+pub struct MstRepairable;
+
+#[async_trait]
+impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for MstRepairable {
+    fn name(&self) -> &'static str {
+        "MstRepairable"
+    }
+
+    async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
+        let Some(root) = ctx.root else {
+            if ctx.oracle.live_count() == 0 {
+                return Ok(());
+            }
+            return Err(InvariantViolation {
+                invariant: "MstRepairable",
+                detail: format!(
+                    "oracle has {} live records but store has no root after repair",
+                    ctx.oracle.live_count()
+                ),
+            });
+        };
+        let mst = Mst::load(ctx.store.clone(), root, None);
+        let entries: Vec<(String, CidBytes)> = ctx
+            .oracle
+            .live_records()
+            .map(|(c, r, v)| (format!("{}/{}", c.0, r.0), *v))
+            .collect();
+
+        let mut violations: Vec<String> = Vec::new();
+        for (key, expected) in &entries {
+            match mst.get(key).await {
+                Ok(Some(cid)) => match try_cid_to_fixed(&cid) {
+                    Ok(actual) if actual == *expected => {}
+                    Ok(actual) => violations.push(format!(
+                        "{key}: MST cid {} != oracle cid {} after repair",
+                        hex_short(&actual),
+                        hex_short(expected),
+                    )),
+                    Err(e) => violations.push(format!("{key}: unexpected CID format: {e}")),
+                },
+                Ok(None) => violations.push(format!("{key}: MST returned None after repair")),
+                Err(e) => violations.push(format!("{key}: mst.get error after repair: {e}")),
+            }
+        }
+
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(InvariantViolation {
+                invariant: "MstRepairable",
                 detail: violations.join("; "),
             })
         }
@@ -926,6 +984,7 @@ pub fn invariants_for<S: StorageIO + Send + Sync + 'static, C: Clock>(
             Box::new(AckedWritePersistence),
         ),
         (InvariantSet::READ_AFTER_WRITE, Box::new(ReadAfterWrite)),
+        (InvariantSet::MST_REPAIRABLE, Box::new(MstRepairable)),
         (
             InvariantSet::COMPACTION_IDEMPOTENT,
             Box::new(CompactionIdempotent),

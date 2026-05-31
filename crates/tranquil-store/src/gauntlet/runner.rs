@@ -672,6 +672,14 @@ where
     }
 
     let end_of_run_set = config.invariants.without(InvariantSet::RESTART_IDEMPOTENT);
+    if !halt_ops
+        && config.invariants.contains(InvariantSet::MST_REPAIRABLE)
+        && let Some(live) = harness.as_ref()
+        && let Some(v) = attempt_structural_repair(&live.store, &oracle, root).await
+    {
+        violations.push(v);
+        halt_ops = true;
+    }
     if !halt_ops && let Some(live) = harness.as_ref() {
         match refresh_oracle_graph(&live.store, &mut oracle, root).await {
             Ok(()) => {
@@ -1021,6 +1029,36 @@ pub(super) async fn refresh_oracle_graph<S: StorageIO + Send + Sync + 'static, C
             oracle.set_mst_node_cids(fixed);
             Ok(())
         }
+    }
+}
+
+async fn attempt_structural_repair<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    store: &Arc<TranquilBlockStore<S, C>>,
+    oracle: &Oracle,
+    root: Option<Cid>,
+) -> Option<InvariantViolation> {
+    let r = root?;
+    let entries: Vec<(String, Cid)> = oracle
+        .live_records()
+        .filter_map(|(c, rk, v)| {
+            Cid::try_from(&v[..])
+                .ok()
+                .map(|cid| (format!("{}/{}", c.0, rk.0), cid))
+        })
+        .collect();
+    match crate::blockstore::rebuild_and_repair_mst(store, &entries, r).await {
+        Ok(outcome) => {
+            tracing::info!(
+                nodes_repaired = outcome.nodes_repaired,
+                nodes_total = outcome.nodes_total,
+                "structural repair complete"
+            );
+            None
+        }
+        Err(e) => Some(InvariantViolation {
+            invariant: "MstRepairFailed",
+            detail: e.to_string(),
+        }),
     }
 }
 
@@ -1867,6 +1905,14 @@ where
     }
 
     let end_of_run_set = config.invariants.without(InvariantSet::RESTART_IDEMPOTENT);
+    if !halt_ops
+        && config.invariants.contains(InvariantSet::MST_REPAIRABLE)
+        && let Some(live) = harness.as_ref()
+        && let Some(v) = attempt_structural_repair(&live.store, &oracle, root).await
+    {
+        violations.push(v);
+        halt_ops = true;
+    }
     if !halt_ops && let Some(live) = harness.as_ref() {
         match refresh_oracle_graph(&live.store, &mut oracle, root).await {
             Ok(()) => {

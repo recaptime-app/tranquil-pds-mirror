@@ -114,6 +114,13 @@ impl FaultConfig {
         }
     }
 
+    pub fn misdirected_only() -> Self {
+        Self {
+            misdirected_write_probability: Probability::new(0.25),
+            ..Self::none()
+        }
+    }
+
     pub fn fsyncgate_only() -> Self {
         Self {
             delayed_io_error_probability: Probability::new(0.05),

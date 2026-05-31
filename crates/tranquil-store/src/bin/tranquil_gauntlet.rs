@@ -285,7 +285,9 @@ impl SweepAxisValues {
 impl SweepAxes {
     fn axis_values(&self) -> Vec<SweepAxisValues> {
         let base = vec![SweepAxisValues::default()];
-        let base = cross(base, &self.writer_concurrency, |a, v| a.writer_concurrency = Some(v));
+        let base = cross(base, &self.writer_concurrency, |a, v| {
+            a.writer_concurrency = Some(v)
+        });
         let base = cross(base, &self.key_space, |a, v| a.key_space = Some(v));
         let base = cross(base, &self.value_bytes, |a, v| a.value_bytes = Some(v));
         let base = cross(base, &self.fault_density_scale, |a, v| {
