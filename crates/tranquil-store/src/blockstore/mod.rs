@@ -6,6 +6,7 @@ pub mod hash_index;
 mod hint;
 mod manager;
 mod reader;
+mod repair;
 mod store;
 mod types;
 
@@ -25,7 +26,8 @@ pub use hint::{
     ReadHintRecord, RebuildError, decode_hint_record, hint_file_path, scan_hints_to_memory,
 };
 pub use manager::{CachedHandle, DEFAULT_MAX_FILE_SIZE, DataFileManager};
-pub use reader::{BlockStoreReader, ReadError};
+pub use reader::{BLOCK_CORRUPTION_MARKER, BlockStoreReader, ReadError};
+pub use repair::{RepairOutcome, rebuild_and_repair_mst};
 pub use store::QuiesceGuard;
 pub use store::{BlockStoreConfig, DEFAULT_SHARD_COUNT, OpenRetryPolicy, TranquilBlockStore};
 pub use types::{

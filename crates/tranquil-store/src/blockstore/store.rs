@@ -27,7 +27,7 @@ use super::types::{
     LivenessInfo,
 };
 
-fn cid_to_bytes(cid: &Cid) -> Result<[u8; CID_SIZE], RepoError> {
+pub(crate) fn cid_to_bytes(cid: &Cid) -> Result<[u8; CID_SIZE], RepoError> {
     let raw = cid.to_bytes();
     let len = raw.len();
     raw.try_into().map_err(|_| {
@@ -64,7 +64,11 @@ fn read_error_to_repo(e: ReadError) -> RepoError {
         }
         ReadError::Corrupted { file_id, offset } => RepoError::storage(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("corrupted block at {file_id}:{}", offset.raw()),
+            format!(
+                "{} {file_id}:{}",
+                super::reader::BLOCK_CORRUPTION_MARKER,
+                offset.raw()
+            ),
         )),
     }
 }
@@ -345,10 +349,12 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         }
 
         let header_start = BlockOffset::new(super::data_file::BLOCK_HEADER_SIZE as u64);
+        let indexed_ends = index.indexed_file_ends();
 
         all_data_files.iter().try_for_each(|&fid| {
             let start_offset = file_cursors.get(&fid).copied().unwrap_or(header_start);
-            Self::replay_single_file(io, data_dir, index, fid, start_offset)
+            let indexed_end = indexed_ends.get(&fid).copied().unwrap_or(header_start);
+            Self::replay_single_file(io, data_dir, index, fid, start_offset, indexed_end)
         })
     }
 
@@ -358,6 +364,7 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         index: &BlockIndex,
         file_id: DataFileId,
         start_offset: BlockOffset,
+        indexed_end: BlockOffset,
     ) -> Result<(), RepoError> {
         let file_path = data_dir.join(format!("{file_id}.{}", super::manager::DATA_FILE_EXTENSION));
 
@@ -381,7 +388,8 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
             })
             .is_ok();
 
-        let result = Self::scan_and_index(io, index, fd, file_id, start_offset, hint_exists);
+        let result =
+            Self::scan_and_index(io, index, fd, file_id, start_offset, indexed_end, hint_exists);
 
         let _ = io.close(fd);
 
@@ -394,6 +402,7 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         fd: crate::io::FileId,
         file_id: DataFileId,
         start_offset: BlockOffset,
+        indexed_end: BlockOffset,
         hint_exists: bool,
     ) -> Result<(), RepoError> {
         let file_size = io.file_size(fd).map_err(RepoError::storage)?;
@@ -453,15 +462,17 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
             RepoError::storage(e)
         })?;
 
-        if file_size > last_valid_end.raw() {
+        let keep_end = last_valid_end.max(indexed_end);
+
+        if file_size > keep_end.raw() {
             tracing::info!(
                 file_id = %file_id,
-                truncating_from = last_valid_end.raw(),
+                truncating_from = keep_end.raw(),
                 file_size,
                 scanned_count = scanned_entries.len(),
                 "truncating partial/unacked tail"
             );
-            io.truncate(fd, last_valid_end.raw())
+            io.truncate(fd, keep_end.raw())
                 .map_err(RepoError::storage)?;
             io.sync(fd).map_err(RepoError::storage)?;
         }
@@ -475,7 +486,7 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
             );
             let cursor = super::types::WriteCursor {
                 file_id,
-                offset: last_valid_end,
+                offset: keep_end,
             };
             index
                 .batch_put_if_absent(&scanned_entries, cursor)
@@ -597,6 +608,28 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         rx.blocking_recv()
             .map_err(|_| commit_error_to_repo(CommitError::ChannelClosed))?
             .map_err(commit_error_to_repo)
+    }
+
+    pub fn repair_blocks(
+        &self,
+        blocks: Vec<(super::types::CidBytes, Vec<u8>)>,
+    ) -> Result<u64, CompactionError> {
+        if blocks.is_empty() {
+            return Ok(0);
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let sender = self
+            .writer
+            .with(|w| w.sender_round_robin().clone())
+            .map_err(|_| CompactionError::ChannelClosed)?;
+        sender
+            .send(CommitRequest::RepairBlocks {
+                blocks,
+                response: tx,
+            })
+            .map_err(|_| CompactionError::ChannelClosed)?;
+        rx.blocking_recv()
+            .map_err(|_| CompactionError::ChannelClosed)?
     }
 
     pub fn get_block_sync(
@@ -939,6 +972,7 @@ mod tests {
             &data_dir,
             &index,
             file_id,
+            BlockOffset::new(BLOCK_HEADER_SIZE as u64),
             BlockOffset::new(BLOCK_HEADER_SIZE as u64),
         );
 

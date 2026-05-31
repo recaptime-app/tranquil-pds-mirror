@@ -707,6 +707,22 @@ impl HashTable {
         })
     }
 
+    pub fn indexed_file_ends(&self) -> HashMap<DataFileId, BlockOffset> {
+        self.iter().fold(HashMap::new(), |mut ends, s| {
+            let end = s
+                .offset
+                .advance(super::data_file::BLOCK_RECORD_OVERHEAD as u64 + s.length.as_u64());
+            ends.entry(s.file_id)
+                .and_modify(|cur| {
+                    if end > *cur {
+                        *cur = end;
+                    }
+                })
+                .or_insert(end);
+            ends
+        })
+    }
+
     pub fn find_leaked_refcounts(
         &self,
         is_reachable: impl Fn(&CidBytes) -> bool,
@@ -1502,6 +1518,10 @@ impl BlockIndex {
         self.table
             .read()
             .liveness_by_file(current_epoch, now, grace_period_ms)
+    }
+
+    pub fn indexed_file_ends(&self) -> HashMap<DataFileId, BlockOffset> {
+        self.table.read().indexed_file_ends()
     }
 
     pub fn find_leaked_refcounts(
