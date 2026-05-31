@@ -1,0 +1,7 @@
+scenario = "eventlog-time-travel-chaos"
+seeds = 256
+dump_regressions = "/root/gauntlet-regressions"
+
+[overrides]
+op_count = 4000
+fault_density_scale = 0.1

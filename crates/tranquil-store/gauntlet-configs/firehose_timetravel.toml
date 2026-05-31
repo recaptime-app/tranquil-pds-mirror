@@ -1,0 +1,7 @@
+scenario = "firehose-fanout"
+seeds = 128
+dump_regressions = "/root/gauntlet-regressions"
+
+[axes]
+advance_time = [20, 60]
+advance_max_secs = [3600, 86400, 604800]

@@ -1,0 +1,11 @@
+scenario = "moderate-faults"
+seeds = 128
+dump_regressions = "/root/gauntlet-regressions"
+
+[base_overrides]
+op_count = 20000
+
+[axes]
+fault_density_scale = [0.0, 1.0]
+advance_time = [20, 60]
+advance_max_secs = [3600, 86400, 604800]

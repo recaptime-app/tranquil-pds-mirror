@@ -1,0 +1,6 @@
+scenario = "eventlog-time-travel-chaos"
+seeds = 64
+
+[axes]
+fault_density_scale = [0.0, 1.0]
+advance_time = [0, 20]
