@@ -1,6 +1,6 @@
 use super::validation::validate_record_with_status;
 use super::validation_mode::{ValidationMode, deserialize_validation_mode};
-use crate::repo::record::write::CommitInfo;
+use crate::repo::record::write::{CommitInfo, ensure_record_type};
 use axum::{Json, extract::State};
 use jacquard_repo::{mst::Mst, storage::BlockStore};
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,8 @@ async fn process_single_write(
             rkey,
             value,
         } => {
+            let value = ensure_record_type(value, collection);
+            let value = &*value;
             let validation_status = if validate.should_skip() {
                 None
             } else {
@@ -117,6 +119,8 @@ async fn process_single_write(
             rkey,
             value,
         } => {
+            let value = ensure_record_type(value, collection);
+            let value = &*value;
             let validation_status = if validate.should_skip() {
                 None
             } else {

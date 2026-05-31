@@ -773,3 +773,166 @@ async fn test_list_records_comprehensive() {
         .expect("Failed with nonexistent repo");
     assert_eq!(not_found_res.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn test_missing_type_is_filled_from_collection() {
+    let client = client();
+    let (did, jwt) = setup_new_user("missing-type").await;
+    let now = Utc::now().to_rfc3339();
+
+    let create_res = client
+        .post(format!(
+            "{}/xrpc/com.atproto.repo.createRecord",
+            base_url().await
+        ))
+        .bearer_auth(&jwt)
+        .json(&json!({
+            "repo": did,
+            "collection": "app.bsky.feed.post",
+            "record": { "text": "no type set", "createdAt": now }
+        }))
+        .send()
+        .await
+        .expect("Failed to create record without $type");
+    assert_eq!(
+        create_res.status(),
+        StatusCode::OK,
+        "createRecord should fill missing $type from collection"
+    );
+    let create_body: Value = create_res.json().await.unwrap();
+    let create_rkey = create_body["uri"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let get_created = client
+        .get(format!(
+            "{}/xrpc/com.atproto.repo.getRecord",
+            base_url().await
+        ))
+        .query(&[
+            ("repo", did.as_str()),
+            ("collection", "app.bsky.feed.post"),
+            ("rkey", &create_rkey),
+        ])
+        .send()
+        .await
+        .expect("Failed to get created record");
+    let created_body: Value = get_created.json().await.unwrap();
+    assert_eq!(created_body["value"]["$type"], "app.bsky.feed.post");
+
+    let put_res = client
+        .post(format!(
+            "{}/xrpc/com.atproto.repo.putRecord",
+            base_url().await
+        ))
+        .bearer_auth(&jwt)
+        .json(&json!({
+            "repo": did,
+            "collection": "app.bsky.actor.profile",
+            "rkey": "self",
+            "record": { "displayName": "No Type" }
+        }))
+        .send()
+        .await
+        .expect("Failed to put record without $type");
+    assert_eq!(
+        put_res.status(),
+        StatusCode::OK,
+        "putRecord should fill missing $type from collection"
+    );
+    let get_put = client
+        .get(format!(
+            "{}/xrpc/com.atproto.repo.getRecord",
+            base_url().await
+        ))
+        .query(&[
+            ("repo", did.as_str()),
+            ("collection", "app.bsky.actor.profile"),
+            ("rkey", "self"),
+        ])
+        .send()
+        .await
+        .expect("Failed to get put record");
+    let put_body: Value = get_put.json().await.unwrap();
+    assert_eq!(put_body["value"]["$type"], "app.bsky.actor.profile");
+
+    let apply_res = client
+        .post(format!(
+            "{}/xrpc/com.atproto.repo.applyWrites",
+            base_url().await
+        ))
+        .bearer_auth(&jwt)
+        .json(&json!({
+            "repo": did,
+            "writes": [
+                { "$type": "com.atproto.repo.applyWrites#create", "collection": "app.bsky.feed.post", "rkey": "batch-no-type", "value": { "text": "batch no type", "createdAt": now } }
+            ]
+        }))
+        .send()
+        .await
+        .expect("Failed to apply writes without $type");
+    assert_eq!(
+        apply_res.status(),
+        StatusCode::OK,
+        "applyWrites should fill missing $type from collection"
+    );
+    let get_batch = client
+        .get(format!(
+            "{}/xrpc/com.atproto.repo.getRecord",
+            base_url().await
+        ))
+        .query(&[
+            ("repo", did.as_str()),
+            ("collection", "app.bsky.feed.post"),
+            ("rkey", "batch-no-type"),
+        ])
+        .send()
+        .await
+        .expect("Failed to get batch record");
+    let batch_body: Value = get_batch.json().await.unwrap();
+    assert_eq!(batch_body["value"]["$type"], "app.bsky.feed.post");
+
+    let mismatch_res = client
+        .post(format!(
+            "{}/xrpc/com.atproto.repo.createRecord",
+            base_url().await
+        ))
+        .bearer_auth(&jwt)
+        .json(&json!({
+            "repo": did,
+            "collection": "app.bsky.feed.post",
+            "record": { "$type": "app.bsky.feed.like", "text": "wrong type", "createdAt": now }
+        }))
+        .send()
+        .await
+        .expect("Failed to send mismatch request");
+    assert_eq!(
+        mismatch_res.status(),
+        StatusCode::BAD_REQUEST,
+        "explicit mismatched $type should still be rejected"
+    );
+
+    let non_string_type_res = client
+        .post(format!(
+            "{}/xrpc/com.atproto.repo.createRecord",
+            base_url().await
+        ))
+        .bearer_auth(&jwt)
+        .json(&json!({
+            "repo": did,
+            "collection": "app.bsky.feed.post",
+            "record": { "$type": 123, "text": "non-string type", "createdAt": now }
+        }))
+        .send()
+        .await
+        .expect("Failed to send non-string type request");
+    assert_eq!(
+        non_string_type_res.status(),
+        StatusCode::BAD_REQUEST,
+        "present non-string $type should be rejected, not overwritten"
+    );
+}

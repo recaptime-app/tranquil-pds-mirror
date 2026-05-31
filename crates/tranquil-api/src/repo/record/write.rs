@@ -5,6 +5,7 @@ use cid::Cid;
 use jacquard_repo::storage::BlockStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::borrow::Cow;
 use std::str::FromStr;
 use tracing::error;
 use tranquil_pds::api::error::{ApiError, DbResultExt};
@@ -62,6 +63,29 @@ pub async fn prepare_repo_write<A: RepoScopeAction>(
     })
 }
 
+pub(crate) fn ensure_record_type<'a>(
+    record: &'a serde_json::Value,
+    collection: &Nsid,
+) -> Cow<'a, serde_json::Value> {
+    let serde_json::Value::Object(map) = record else {
+        return Cow::Borrowed(record);
+    };
+    let needs_fill = match map.get("$type") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(existing)) => existing.is_empty(),
+        Some(_) => false,
+    };
+    if !needs_fill {
+        return Cow::Borrowed(record);
+    }
+    let mut map = map.clone();
+    map.insert(
+        "$type".to_string(),
+        serde_json::Value::String(collection.to_string()),
+    );
+    Cow::Owned(serde_json::Value::Object(map))
+}
+
 #[derive(Deserialize)]
 #[allow(dead_code)]
 pub struct CreateRecordInput {
@@ -95,8 +119,11 @@ pub struct CreateRecordOutput {
 pub async fn create_record(
     State(state): State<AppState>,
     auth: Auth<Active>,
-    Json(input): Json<CreateRecordInput>,
+    Json(mut input): Json<CreateRecordInput>,
 ) -> Result<Json<CreateRecordOutput>, ApiError> {
+    if let Cow::Owned(record) = ensure_record_type(&input.record, &input.collection) {
+        input.record = record;
+    }
     let scope_proof = auth.verify_repo_create(&input.collection)?;
     let repo_auth = prepare_repo_write(&state, &scope_proof, &input.repo).await?;
     let did = repo_auth.did;
@@ -278,8 +305,11 @@ pub struct PutRecordOutput {
 pub async fn put_record(
     State(state): State<AppState>,
     auth: Auth<Active>,
-    Json(input): Json<PutRecordInput>,
+    Json(mut input): Json<PutRecordInput>,
 ) -> Result<Json<PutRecordOutput>, ApiError> {
+    if let Cow::Owned(record) = ensure_record_type(&input.record, &input.collection) {
+        input.record = record;
+    }
     let upsert_proof = auth.verify_repo_upsert(&input.collection)?;
     let repo_auth = prepare_repo_write(&state, &upsert_proof, &input.repo).await?;
     let did = repo_auth.did;
