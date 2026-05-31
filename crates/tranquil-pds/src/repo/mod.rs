@@ -7,7 +7,7 @@ use cid::Cid;
 use jacquard_repo::error::RepoError;
 use jacquard_repo::repo::CommitData;
 use jacquard_repo::storage::BlockStore;
-use tranquil_store::blockstore::TranquilBlockStore;
+use tranquil_store::blockstore::{RepairOutcome, TranquilBlockStore};
 use tranquil_store::{RealIO, SystemClock};
 
 #[derive(Clone)]
@@ -35,6 +35,22 @@ impl AnyBlockStore {
         match self {
             Self::Postgres(_) => Ok(()),
             Self::TranquilStore(s) => s.decrement_refs(cids).await,
+        }
+    }
+
+    pub async fn repair_structure(
+        &self,
+        entries: &[(String, Cid)],
+        expected_root: Cid,
+    ) -> Result<RepairOutcome, RepoError> {
+        match self {
+            Self::Postgres(_) => Ok(RepairOutcome {
+                nodes_total: 0,
+                nodes_repaired: 0,
+            }),
+            Self::TranquilStore(s) => {
+                tranquil_store::blockstore::rebuild_and_repair_mst(s, entries, expected_root).await
+            }
         }
     }
 }

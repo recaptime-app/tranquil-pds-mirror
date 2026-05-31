@@ -14,8 +14,8 @@ use tranquil_pds::auth::{
 };
 use tranquil_pds::repo::TrackingBlockStore;
 use tranquil_pds::repo_ops::{
-    FinalizeParams, RecordOp, begin_repo_write, extract_backlinks, extract_blob_cids,
-    finalize_repo_write,
+    CommitResult, FinalizeParams, RecordOp, begin_repo_write, extract_backlinks, extract_blob_cids,
+    finalize_repo_write, with_repair_retry,
 };
 use tranquil_pds::state::AppState;
 use tranquil_pds::types::{AtIdentifier, AtUri, Did, Nsid, Rkey};
@@ -74,7 +74,7 @@ async fn process_single_write(
             if mst
                 .get(&key)
                 .await
-                .map_err(|e| ApiError::InternalError(Some(format!("Failed to read MST: {e}"))))?
+                .map_err(|e| ApiError::from_mst_error("read MST for applyWrites create", &e))?
                 .is_some()
             {
                 return Err(ApiError::InvalidRequest(format!(
@@ -92,7 +92,7 @@ async fn process_single_write(
             let new_mst = mst
                 .add(&key, record_cid)
                 .await
-                .map_err(|_| ApiError::InternalError(Some("Failed to add to MST".into())))?;
+                .map_err(|e| ApiError::from_mst_error("add record to MST", &e))?;
             let uri = AtUri::from_parts(did, collection, &rkey);
             backlinks_to_add.extend(extract_backlinks(&uri, value));
             results.push(WriteResult::CreateResult {
@@ -138,9 +138,7 @@ async fn process_single_write(
             let prev_record_cid = mst
                 .get(&key)
                 .await
-                .map_err(|e| {
-                    ApiError::InternalError(Some(format!("Failed to read prev record: {}", e)))
-                })?
+                .map_err(|e| ApiError::from_mst_error("read update target from MST", &e))?
                 .ok_or_else(|| {
                     ApiError::InvalidRequest("Update target record does not exist".into())
                 })?;
@@ -155,7 +153,7 @@ async fn process_single_write(
             let new_mst = mst
                 .update(&key, record_cid)
                 .await
-                .map_err(|_| ApiError::InternalError(Some("Failed to update MST".into())))?;
+                .map_err(|e| ApiError::from_mst_error("update record in MST", &e))?;
             let uri = AtUri::from_parts(did, collection, rkey);
             backlinks_to_remove.push(uri.clone());
             backlinks_to_add.extend(extract_backlinks(&uri, value));
@@ -184,16 +182,14 @@ async fn process_single_write(
             let prev_record_cid = mst
                 .get(&key)
                 .await
-                .map_err(|e| {
-                    ApiError::InternalError(Some(format!("Failed to read prev record: {}", e)))
-                })?
+                .map_err(|e| ApiError::from_mst_error("read delete target from MST", &e))?
                 .ok_or_else(|| {
                     ApiError::InvalidRequest("Delete target record does not exist".into())
                 })?;
             let new_mst = mst
                 .delete(&key)
                 .await
-                .map_err(|_| ApiError::InternalError(Some("Failed to delete from MST".into())))?;
+                .map_err(|e| ApiError::from_mst_error("delete record from MST", &e))?;
             backlinks_to_remove.push(AtUri::from_parts(did, collection, rkey));
             results.push(WriteResult::DeleteResult {});
             ops.push(RecordOp::Delete {
@@ -234,6 +230,45 @@ async fn process_writes(
             process_single_write(write, acc, did, validate, tracking_store).await
         })
         .await
+}
+
+async fn execute_apply_writes(
+    state: &AppState,
+    user_id: uuid::Uuid,
+    did: &Did,
+    input: &ApplyWritesInput,
+    controller_did: Option<&Did>,
+    write_summary: Option<serde_json::Value>,
+) -> Result<(CommitResult, Vec<WriteResult>), ApiError> {
+    let (ctx, mst) = begin_repo_write(state, user_id, input.swap_commit.as_deref()).await?;
+
+    let WriteAccumulator {
+        mst: final_mst,
+        results,
+        ops,
+        all_blob_cids,
+        backlinks_to_add,
+        backlinks_to_remove,
+    } = process_writes(&input.writes, mst, did, input.validate, &ctx.tracking_store).await?;
+
+    let commit_result = finalize_repo_write(
+        state,
+        ctx,
+        final_mst,
+        FinalizeParams {
+            did,
+            user_id,
+            controller_did,
+            delegation_detail: write_summary,
+            ops,
+            blob_cids: &all_blob_cids,
+            backlinks_to_add,
+            backlinks_to_remove,
+        },
+    )
+    .await?;
+
+    Ok((commit_result, results))
 }
 
 #[derive(Deserialize)]
@@ -350,24 +385,6 @@ pub async fn apply_writes(
         .log_db_err("fetching user for batch write")?
         .ok_or(ApiError::InternalError(Some("User not found".into())))?;
 
-    let (ctx, mst) = begin_repo_write(&state, user_id, input.swap_commit.as_deref()).await?;
-
-    let WriteAccumulator {
-        mst: final_mst,
-        results,
-        ops,
-        all_blob_cids,
-        backlinks_to_add,
-        backlinks_to_remove,
-    } = process_writes(
-        &input.writes,
-        mst,
-        &did,
-        input.validate,
-        &ctx.tracking_store,
-    )
-    .await?;
-
     let write_summary: Option<serde_json::Value> = controller_did.as_ref().map(|_| {
         let writes: Vec<serde_json::Value> = input
             .writes
@@ -401,21 +418,16 @@ pub async fn apply_writes(
         })
     });
 
-    let commit_result = finalize_repo_write(
-        &state,
-        ctx,
-        final_mst,
-        FinalizeParams {
-            did: &did,
+    let (commit_result, results) = with_repair_retry(&state, user_id, || {
+        execute_apply_writes(
+            &state,
             user_id,
-            controller_did: controller_did.as_ref(),
-            delegation_detail: write_summary,
-            ops,
-            blob_cids: &all_blob_cids,
-            backlinks_to_add,
-            backlinks_to_remove,
-        },
-    )
+            &did,
+            &input,
+            controller_did.as_ref(),
+            write_summary.clone(),
+        )
+    })
     .await?;
 
     Ok(Json(ApplyWritesOutput {

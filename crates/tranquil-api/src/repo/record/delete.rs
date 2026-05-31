@@ -4,13 +4,15 @@ use cid::Cid;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::str::FromStr;
-use tracing::error;
 use tranquil_pds::api::error::ApiError;
 use tranquil_pds::auth::{Active, Auth, VerifyScope};
 use tranquil_pds::cid_types::RecordCid;
-use tranquil_pds::repo_ops::{FinalizeParams, RecordOp, begin_repo_write, finalize_repo_write};
+use tranquil_pds::repo_ops::{
+    FinalizeParams, RecordOp, begin_repo_write, finalize_repo_write, with_repair_retry,
+};
 use tranquil_pds::state::AppState;
-use tranquil_pds::types::{AtIdentifier, AtUri, Nsid, Rkey};
+use tranquil_pds::types::{AtIdentifier, AtUri, Did, Nsid, Rkey};
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct DeleteRecordInput {
@@ -41,13 +43,30 @@ pub async fn delete_record(
     let user_id = repo_auth.user_id;
     let controller_did = repo_auth.controller_did;
 
-    let (ctx, mst) = begin_repo_write(&state, user_id, input.swap_commit.as_deref()).await?;
+    let out = with_repair_retry(&state, user_id, || {
+        delete_record_inner(&state, &did, user_id, controller_did.as_ref(), &input)
+    })
+    .await?;
+    Ok(Json(out))
+}
+
+async fn delete_record_inner(
+    state: &AppState,
+    did: &Did,
+    user_id: Uuid,
+    controller_did: Option<&Did>,
+    input: &DeleteRecordInput,
+) -> Result<DeleteRecordOutput, ApiError> {
+    let (ctx, mst) = begin_repo_write(state, user_id, input.swap_commit.as_deref()).await?;
 
     let key = format!("{}/{}", input.collection, input.rkey);
 
     if let Some(swap_record_str) = &input.swap_record {
         let expected_cid = Cid::from_str(swap_record_str).ok();
-        let actual_cid = mst.get(&key).await.ok().flatten();
+        let actual_cid = mst
+            .get(&key)
+            .await
+            .map_err(|e| ApiError::from_mst_error("read swap target from MST", &e))?;
         if expected_cid != actual_cid {
             return Err(ApiError::InvalidSwap(Some(
                 "Record has been modified or does not exist".into(),
@@ -55,18 +74,18 @@ pub async fn delete_record(
         }
     }
 
-    let prev_record_cid = mst.get(&key).await.map_err(|e| {
-        error!("Failed to read prev record from MST: {}", e);
-        ApiError::InternalError(Some("Failed to read MST".into()))
-    })?;
+    let prev_record_cid = mst
+        .get(&key)
+        .await
+        .map_err(|e| ApiError::from_mst_error("read prev record from MST", &e))?;
     let Some(prev_record_cid) = prev_record_cid else {
-        return Ok(Json(DeleteRecordOutput { commit: None }));
+        return Ok(DeleteRecordOutput { commit: None });
     };
 
-    let new_mst = mst.delete(&key).await.map_err(|e| {
-        error!("Failed to delete from MST: {}", e);
-        ApiError::InternalError(Some("Failed to delete from MST".into()))
-    })?;
+    let new_mst = mst
+        .delete(&key)
+        .await
+        .map_err(|e| ApiError::from_mst_error("delete record from MST", &e))?;
 
     let op = RecordOp::Delete {
         collection: input.collection.clone(),
@@ -74,17 +93,17 @@ pub async fn delete_record(
         prev: RecordCid::from(prev_record_cid),
     };
 
-    let deleted_uri = AtUri::from_parts(&did, &input.collection, &input.rkey);
+    let deleted_uri = AtUri::from_parts(did, &input.collection, &input.rkey);
 
     let commit_result = finalize_repo_write(
-        &state,
+        state,
         ctx,
         new_mst,
         FinalizeParams {
-            did: &did,
+            did,
             user_id,
-            controller_did: controller_did.as_ref(),
-            delegation_detail: controller_did.as_ref().map(|_| {
+            controller_did,
+            delegation_detail: controller_did.map(|_| {
                 json!({
                     "action": "delete",
                     "collection": input.collection,
@@ -99,10 +118,10 @@ pub async fn delete_record(
     )
     .await?;
 
-    Ok(Json(DeleteRecordOutput {
+    Ok(DeleteRecordOutput {
         commit: Some(CommitInfo {
             cid: commit_result.commit_cid.to_string(),
             rev: commit_result.rev,
         }),
-    }))
+    })
 }

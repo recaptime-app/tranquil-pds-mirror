@@ -16,7 +16,8 @@ use k256::ecdsa::SigningKey;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 use tokio::sync::OwnedMutexGuard;
 use tracing::{error, warn};
 use uuid::Uuid;
@@ -230,16 +231,194 @@ pub async fn begin_repo_write(
     Ok((ctx, mst))
 }
 
+pub async fn repair_repo_structure(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<tranquil_store::blockstore::RepairOutcome, ApiError> {
+    let _write_lock = state.repo_write_locks.lock(user_id).await;
+
+    let root_cid_str = state
+        .repos
+        .repo
+        .get_repo_root_cid_by_user_id(user_id)
+        .await
+        .map_err(|e| {
+            error!("repair: DB error fetching repo root: {}", e);
+            ApiError::InternalError(None)
+        })?
+        .ok_or_else(|| ApiError::InternalError(Some("Repo root not found".into())))?;
+    let current_root_cid = Cid::from_str(root_cid_str.as_str())
+        .map_err(|_| ApiError::InternalError(Some("Invalid repo root CID".into())))?;
+
+    let commit_bytes = state
+        .block_store
+        .get(&current_root_cid)
+        .await
+        .map_err(|e| {
+            error!("repair: failed to load commit block: {}", e);
+            ApiError::InternalError(None)
+        })?
+        .ok_or_else(|| ApiError::InternalError(Some("Commit block not found".into())))?;
+    let data_root = Commit::from_cbor(&commit_bytes)
+        .map_err(|e| {
+            error!("repair: failed to parse commit: {}", e);
+            ApiError::InternalError(None)
+        })?
+        .data;
+
+    let records = state
+        .repos
+        .repo
+        .get_all_records(user_id)
+        .await
+        .map_err(|e| {
+            error!("repair: get_all_records failed: {}", e);
+            ApiError::InternalError(None)
+        })?;
+    let entries: Vec<(String, Cid)> = records
+        .into_iter()
+        .filter_map(|r| {
+            Cid::from_str(r.record_cid.as_str())
+                .ok()
+                .map(|cid| (format!("{}/{}", r.collection, r.rkey), cid))
+        })
+        .collect();
+
+    warn!(
+        user_id = %user_id,
+        records = entries.len(),
+        "repair: rebuilding full MST from record set"
+    );
+
+    state
+        .block_store
+        .repair_structure(&entries, data_root)
+        .await
+        .map_err(|e| {
+            error!("repair: structural repair failed: {}", e);
+            ApiError::InternalError(Some("Structural repair failed".into()))
+        })
+}
+
+pub async fn with_repair_retry<T, F, Fut>(
+    state: &AppState,
+    user_id: Uuid,
+    mut attempt: F,
+) -> Result<T, ApiError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, ApiError>>,
+{
+    match attempt().await {
+        Err(e) if e.is_repo_corruption() => {
+            warn!(
+                "structural MST damage during repo write for user {user_id}, repairing and retrying"
+            );
+            match repair_repo_structure(state, user_id).await {
+                Ok(outcome) if outcome.nodes_repaired > 0 => attempt().await,
+                Ok(_) => {
+                    warn!(
+                        user_id = %user_id,
+                        "structural repair rewrote no nodes; damage is not in the MST structure, returning original error without retry"
+                    );
+                    Err(e)
+                }
+                Err(repair_err) => {
+                    error!(user_id = %user_id, "structural repair failed: {repair_err:?}");
+                    Err(e)
+                }
+            }
+        }
+        other => other,
+    }
+}
+
+const REPAIR_COOLDOWN: Duration = Duration::from_secs(60);
+const REPAIR_NOOP_COOLDOWN: Duration = Duration::from_secs(600);
+
+struct RepairSlot {
+    in_flight: bool,
+    next_allowed: Instant,
+}
+
+struct RepairGuard {
+    slots: parking_lot::Mutex<HashMap<Uuid, RepairSlot>>,
+}
+
+impl RepairGuard {
+    fn try_claim(&self, user_id: Uuid, now: Instant) -> bool {
+        let mut slots = self.slots.lock();
+        let slot = slots.entry(user_id).or_insert(RepairSlot {
+            in_flight: false,
+            next_allowed: now,
+        });
+        if slot.in_flight || now < slot.next_allowed {
+            return false;
+        }
+        slot.in_flight = true;
+        true
+    }
+
+    fn release(&self, user_id: Uuid, now: Instant, cooldown: Duration) {
+        if let Some(slot) = self.slots.lock().get_mut(&user_id) {
+            slot.in_flight = false;
+            slot.next_allowed = now + cooldown;
+        }
+    }
+}
+
+static REPAIR_GUARD: LazyLock<RepairGuard> = LazyLock::new(|| RepairGuard {
+    slots: parking_lot::Mutex::new(HashMap::new()),
+});
+
+struct RepairLease {
+    user_id: Uuid,
+    cooldown: Duration,
+}
+
+impl Drop for RepairLease {
+    fn drop(&mut self) {
+        REPAIR_GUARD.release(self.user_id, Instant::now(), self.cooldown);
+    }
+}
+
+pub fn schedule_repo_repair(state: &AppState, user_id: Uuid) {
+    if !REPAIR_GUARD.try_claim(user_id, Instant::now()) {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        let mut lease = RepairLease {
+            user_id,
+            cooldown: REPAIR_COOLDOWN,
+        };
+        match repair_repo_structure(&state, user_id).await {
+            Ok(outcome) => {
+                if outcome.nodes_repaired == 0 {
+                    lease.cooldown = REPAIR_NOOP_COOLDOWN;
+                }
+                warn!(
+                    user_id = %user_id,
+                    nodes_repaired = outcome.nodes_repaired,
+                    nodes_total = outcome.nodes_total,
+                    "background MST repair complete"
+                );
+            }
+            Err(e) => error!(user_id = %user_id, "background MST repair failed: {e:?}"),
+        }
+    });
+}
+
 pub async fn finalize_repo_write(
     state: &AppState,
     ctx: RepoWriteContext,
     mst: Mst<TrackingBlockStore>,
     params: FinalizeParams<'_>,
 ) -> Result<CommitResult, ApiError> {
-    let new_mst_root = mst.persist().await.map_err(|e| {
-        error!("MST persist failed: {}", e);
-        ApiError::InternalError(None)
-    })?;
+    let new_mst_root = mst
+        .persist()
+        .await
+        .map_err(|e| ApiError::from_mst_error("MST persist", &e))?;
 
     let written_bytes = ctx.tracking_store.take_written_blocks();
     let new_tree_cids: Vec<Cid> = written_bytes.keys().copied().collect();
@@ -860,4 +1039,118 @@ pub async fn sequence_genesis_commit(
         )
         .await
         .map_err(|e| CommitError::DatabaseError(format!("genesis commit event: {}", e)))
+}
+
+#[cfg(test)]
+mod repair_guard_tests {
+    use super::*;
+
+    fn guard() -> RepairGuard {
+        RepairGuard {
+            slots: parking_lot::Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[test]
+    fn claim_dedups_in_flight_then_respects_cooldown() {
+        let g = guard();
+        let user = Uuid::from_u128(1);
+        let t0 = Instant::now();
+
+        assert!(g.try_claim(user, t0), "first claim must succeed");
+        assert!(
+            !g.try_claim(user, t0),
+            "second claim while a repair is in flight must be rejected"
+        );
+
+        g.release(user, t0, REPAIR_COOLDOWN);
+        assert!(
+            !g.try_claim(user, t0 + Duration::from_secs(1)),
+            "claim within the cooldown window must be rejected"
+        );
+        assert!(
+            g.try_claim(user, t0 + REPAIR_COOLDOWN + Duration::from_millis(1)),
+            "claim after the cooldown window must succeed"
+        );
+    }
+
+    #[test]
+    fn distinct_users_do_not_block_each_other() {
+        let g = guard();
+        let t0 = Instant::now();
+        assert!(g.try_claim(Uuid::from_u128(1), t0));
+        assert!(g.try_claim(Uuid::from_u128(2), t0));
+    }
+
+    #[test]
+    fn concurrent_claims_for_one_user_admit_exactly_one() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let g = Arc::new(guard());
+        let user = Uuid::from_u128(42);
+        let now = Instant::now();
+        let winners = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Barrier::new(32));
+
+        let handles: Vec<_> = (0..32)
+            .map(|_| {
+                let g = Arc::clone(&g);
+                let winners = Arc::clone(&winners);
+                let gate = Arc::clone(&gate);
+                std::thread::spawn(move || {
+                    gate.wait();
+                    if g.try_claim(user, now) {
+                        winners.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .for_each(|h| h.join().expect("worker thread panicked"));
+
+        assert_eq!(
+            winners.load(Ordering::Relaxed),
+            1,
+            "exactly one concurrent claim must win the dedup race"
+        );
+    }
+
+    #[test]
+    fn release_re_enables_claim_after_cooldown_for_recurring_corruption() {
+        let g = guard();
+        let user = Uuid::from_u128(7);
+        let t0 = Instant::now();
+
+        assert!(g.try_claim(user, t0));
+        g.release(user, t0, REPAIR_COOLDOWN);
+        let after_cooldown = t0 + REPAIR_COOLDOWN + Duration::from_millis(1);
+        assert!(
+            g.try_claim(user, after_cooldown),
+            "a fresh corruption after the cooldown must be repairable again"
+        );
+        assert!(
+            !g.try_claim(user, after_cooldown),
+            "the re-claimed repair must again dedup while in flight"
+        );
+    }
+
+    #[test]
+    fn noop_repair_uses_longer_cooldown() {
+        let g = guard();
+        let user = Uuid::from_u128(9);
+        let t0 = Instant::now();
+
+        assert!(g.try_claim(user, t0));
+        g.release(user, t0, REPAIR_NOOP_COOLDOWN);
+        assert!(
+            !g.try_claim(user, t0 + REPAIR_COOLDOWN + Duration::from_millis(1)),
+            "after a no-op repair the standard cooldown must not re-admit a claim"
+        );
+        assert!(
+            g.try_claim(user, t0 + REPAIR_NOOP_COOLDOWN + Duration::from_millis(1)),
+            "after the longer no-op cooldown a fresh claim must be admitted"
+        );
+    }
 }

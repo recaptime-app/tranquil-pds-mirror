@@ -163,6 +163,9 @@ pub async fn get_repo(
     {
         Ok(bytes) => bytes,
         Err(e) => {
+            if ApiError::detail_is_repo_corruption(&format!("{e:#}")) {
+                tranquil_pds::repo_ops::schedule_repo_repair(&state, account.user_id);
+            }
             error!("Failed to generate repo CAR: {}", e);
             return ApiError::InternalError(None).into_response();
         }
@@ -230,6 +233,9 @@ async fn get_repo_since(state: &AppState, did: &Did, head_cid: &Cid, since: &str
         let blocks = match state.block_store.get_many(chunk).await {
             Ok(b) => b,
             Err(e) => {
+                if ApiError::detail_is_repo_corruption(&format!("{e:#}")) {
+                    tranquil_pds::repo_ops::schedule_repo_repair(state, user_id);
+                }
                 error!("Block store error in get_repo_since: {:?}", e);
                 return ApiError::InternalError(Some("Failed to get blocks".into()))
                     .into_response();
@@ -301,7 +307,10 @@ pub async fn get_record(
         Ok(None) => {
             return ApiError::RecordNotFound.into_response();
         }
-        Err(_) => {
+        Err(e) => {
+            if ApiError::detail_is_repo_corruption(&format!("{e:#}")) {
+                tranquil_pds::repo_ops::schedule_repo_repair(&state, account.user_id);
+            }
             return ApiError::InternalError(Some("Failed to lookup record".into())).into_response();
         }
     };
@@ -312,7 +321,10 @@ pub async fn get_record(
         }
     };
     let mut proof_blocks: BTreeMap<Cid, bytes::Bytes> = BTreeMap::new();
-    if mst.blocks_for_path(&key, &mut proof_blocks).await.is_err() {
+    if let Err(e) = mst.blocks_for_path(&key, &mut proof_blocks).await {
+        if ApiError::detail_is_repo_corruption(&format!("{e:#}")) {
+            tranquil_pds::repo_ops::schedule_repo_repair(&state, account.user_id);
+        }
         return ApiError::InternalError(Some("Failed to build proof path".into())).into_response();
     }
     let header = match encode_car_header(&commit_cid) {

@@ -15,6 +15,7 @@ struct ErrorBody<'a> {
 #[derive(Debug)]
 pub enum ApiError {
     InternalError(Option<String>),
+    RepoCorruption,
     AuthenticationRequired,
     AuthenticationFailed(Option<String>),
     InvalidRequest(String),
@@ -121,10 +122,34 @@ pub enum ApiError {
     },
 }
 
+const MST_NODE_MISSING_MARKER: &str = "MST node not found";
+
 impl ApiError {
+    pub fn is_repo_corruption(&self) -> bool {
+        matches!(self, Self::RepoCorruption)
+    }
+
+    pub fn detail_is_repo_corruption(detail: &str) -> bool {
+        detail.contains(tranquil_store::blockstore::BLOCK_CORRUPTION_MARKER)
+            || detail.contains(MST_NODE_MISSING_MARKER)
+    }
+
+    pub fn from_mst_error(context: &str, e: &jacquard_repo::error::RepoError) -> Self {
+        let detail = format!("{e:#}");
+        if Self::detail_is_repo_corruption(&detail) {
+            tracing::warn!("{context}: repairable MST damage: {detail}");
+            Self::RepoCorruption
+        } else {
+            tracing::error!("{context}: {detail}");
+            Self::InternalError(None)
+        }
+    }
+
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::InternalError(_) | Self::DatabaseError => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InternalError(_) | Self::RepoCorruption | Self::DatabaseError => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
             Self::UpstreamFailure | Self::UpstreamUnavailable(_) | Self::UpstreamErrorMsg(_) => {
                 StatusCode::BAD_GATEWAY
             }
@@ -223,7 +248,9 @@ impl ApiError {
     }
     fn error_name(&self) -> Cow<'static, str> {
         match self {
-            Self::InternalError(_) | Self::DatabaseError => Cow::Borrowed("InternalServerError"),
+            Self::InternalError(_) | Self::RepoCorruption | Self::DatabaseError => {
+                Cow::Borrowed("InternalServerError")
+            }
             Self::UpstreamFailure | Self::UpstreamUnavailable(_) | Self::UpstreamErrorMsg(_) => {
                 Cow::Borrowed("UpstreamError")
             }
@@ -332,6 +359,7 @@ impl ApiError {
             Self::InternalError(msg) => msg
                 .clone()
                 .unwrap_or_else(|| "Internal Server Error".into()),
+            Self::RepoCorruption => "Internal Server Error".into(),
             Self::AuthenticationFailed(msg) => msg
                 .clone()
                 .unwrap_or_else(|| "Authentication failed".into()),
