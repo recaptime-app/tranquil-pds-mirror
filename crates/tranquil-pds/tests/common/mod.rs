@@ -130,6 +130,13 @@ pub fn pds_endpoint() -> String {
     format!("https://{}", pds_hostname())
 }
 
+#[allow(dead_code)]
+pub fn store_data_dir() -> Option<PathBuf> {
+    std::env::var("TRANQUIL_STORE_DATA_DIR")
+        .ok()
+        .map(PathBuf::from)
+}
+
 pub async fn base_url() -> &'static str {
     SERVER_URL.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -950,8 +957,7 @@ pub async fn sequenced_event_for_did(
         .await
         .expect("get_events_since_seq")
         .into_iter()
-        .filter(|event| &event.did == did)
-        .last()
+        .rfind(|event| &event.did == did)
         .unwrap_or_else(|| panic!("event for did {did} not found after flush"))
 }
 
