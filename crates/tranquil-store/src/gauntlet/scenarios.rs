@@ -34,6 +34,8 @@ pub enum Scenario {
     FlakyDevice,
     ExternalCorruption,
     RetentionTimeTravel,
+    EventlogTimeTravelChaos,
+    BlockChurnRecoverable,
 }
 
 impl Scenario {
@@ -59,6 +61,8 @@ impl Scenario {
             Self::FlakyDevice => "FlakyDevice",
             Self::ExternalCorruption => "ExternalCorruption",
             Self::RetentionTimeTravel => "RetentionTimeTravel",
+            Self::EventlogTimeTravelChaos => "EventlogTimeTravelChaos",
+            Self::BlockChurnRecoverable => "BlockChurnRecoverable",
         }
     }
 
@@ -84,6 +88,8 @@ impl Scenario {
             Self::FlakyDevice => "flaky-device",
             Self::ExternalCorruption => "external-corruption",
             Self::RetentionTimeTravel => "retention-time-travel",
+            Self::EventlogTimeTravelChaos => "eventlog-time-travel-chaos",
+            Self::BlockChurnRecoverable => "block-churn-recoverable",
         }
     }
 
@@ -125,6 +131,12 @@ impl Scenario {
             Self::RetentionTimeTravel => {
                 "Eventlog retention under logical time travel: random multi-day AdvanceTime jumps interleaved with append/sync/retention. TOMBSTONE_BOUND across fake weeks."
             }
+            Self::EventlogTimeTravelChaos => {
+                "Eventlog crash-recovery under logical time travel with recoverable faults. Expect 100% clean: any violation is a recovery bug, not the single-copy detection limit."
+            }
+            Self::BlockChurnRecoverable => {
+                "Block-only churn under recoverable faults with crashes. Deterministic vehicle for refcount/reachability recovery bugs without the single-copy corruption-detection noise."
+            }
         }
     }
 
@@ -157,6 +169,8 @@ impl Scenario {
         Self::FlakyDevice,
         Self::ExternalCorruption,
         Self::RetentionTimeTravel,
+        Self::EventlogTimeTravelChaos,
+        Self::BlockChurnRecoverable,
     ];
 }
 
@@ -233,6 +247,8 @@ pub fn config_for(scenario: Scenario, seed: Seed) -> GauntletConfig {
         Scenario::FlakyDevice => flaky_device(seed),
         Scenario::ExternalCorruption => external_corruption(seed),
         Scenario::RetentionTimeTravel => retention_time_travel(seed),
+        Scenario::EventlogTimeTravelChaos => eventlog_time_travel_chaos(seed),
+        Scenario::BlockChurnRecoverable => block_churn_recoverable(seed),
     }
 }
 
@@ -888,6 +904,68 @@ fn retention_time_travel(seed: Seed) -> GauntletConfig {
         eventlog: Some(EventLogConfig {
             max_segment_size: MaxSegmentSize(8 * 1024),
         }),
+        writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
+    }
+}
+
+fn eventlog_time_travel_chaos(seed: Seed) -> GauntletConfig {
+    GauntletConfig {
+        seed,
+        io: IoBackend::Simulated {
+            fault: FaultConfig::recoverable(),
+        },
+        workload: WorkloadModel {
+            weights: OpWeights {
+                add: 15,
+                compact: 2,
+                checkpoint: 3,
+                append_event: 35,
+                sync_event_log: 15,
+                run_retention: 10,
+                advance_time: 20,
+                ..OpWeights::default()
+            },
+            size_distribution: SizeDistribution::Fixed(ValueBytes(96)),
+            collections: default_collections(),
+            key_space: KeySpaceSize(400),
+            did_space: DidSpaceSize(64),
+            retention_max_secs: RetentionMaxSecs(604_800),
+            advance_max_secs: AdvanceMaxSecs(259_200),
+        },
+        op_count: OpCount(20_000),
+        invariants: sim_invariants()
+            | InvariantSet::MONOTONIC_SEQ
+            | InvariantSet::FSYNC_ORDERING
+            | InvariantSet::TOMBSTONE_BOUND,
+        limits: RunLimits {
+            max_wall_ms: Some(WallMs(10 * 60_000)),
+        },
+        restart_policy: RestartPolicy::CrashAtSyscall(OpInterval(2_000)),
+        store: sim_store(),
+        eventlog: Some(EventLogConfig {
+            max_segment_size: MaxSegmentSize(16 * 1024),
+        }),
+        writer_concurrency: WriterConcurrency(1),
+        tolerate_op_errors: false,
+    }
+}
+
+fn block_churn_recoverable(seed: Seed) -> GauntletConfig {
+    GauntletConfig {
+        seed,
+        io: IoBackend::Simulated {
+            fault: FaultConfig::recoverable(),
+        },
+        workload: sim_microbench_workload(),
+        op_count: OpCount(20_000),
+        invariants: sim_invariants(),
+        limits: RunLimits {
+            max_wall_ms: Some(WallMs(10 * 60_000)),
+        },
+        restart_policy: RestartPolicy::CrashAtSyscall(OpInterval(2_000)),
+        store: sim_store(),
+        eventlog: None,
         writer_concurrency: WriterConcurrency(1),
         tolerate_op_errors: false,
     }

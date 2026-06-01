@@ -4,7 +4,7 @@ use cid::Cid;
 
 use super::op::{CollectionName, EventKind, RecordKey};
 use crate::blockstore::CidBytes;
-use crate::eventlog::EventSequence;
+use crate::eventlog::{EventSequence, SegmentId};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("unexpected CID encoding: got {actual} bytes, expected 36 for sha256 CIDv1")]
@@ -18,6 +18,7 @@ pub struct EventExpectation {
     pub timestamp_us: u64,
     pub kind: EventKind,
     pub did_hash: u32,
+    pub segment: SegmentId,
 }
 
 #[derive(Debug, Default)]
@@ -29,6 +30,7 @@ pub struct Oracle {
     unsynced_events: Vec<EventExpectation>,
     last_synced_seq: Option<EventSequence>,
     last_retention_cutoff_us: Option<u64>,
+    last_retention_active_segment: Option<SegmentId>,
     lost_blocks: HashSet<CidBytes>,
 }
 
@@ -129,9 +131,18 @@ impl Oracle {
         self.unsynced_events.clear();
     }
 
-    pub fn record_retention(&mut self, cutoff_us: u64) {
+    pub fn forget_events_in_segments(&mut self, lost: &HashSet<SegmentId>) {
+        if lost.is_empty() {
+            return;
+        }
+        self.synced_events.retain(|e| !lost.contains(&e.segment));
+        self.unsynced_events.retain(|e| !lost.contains(&e.segment));
+    }
+
+    pub fn record_retention(&mut self, cutoff_us: u64, active_segment: Option<SegmentId>) {
         self.synced_events.retain(|e| e.timestamp_us >= cutoff_us);
         self.last_retention_cutoff_us = Some(cutoff_us);
+        self.last_retention_active_segment = active_segment;
     }
 
     pub fn synced_events(&self) -> &[EventExpectation] {
@@ -148,6 +159,10 @@ impl Oracle {
 
     pub fn last_retention_cutoff_us(&self) -> Option<u64> {
         self.last_retention_cutoff_us
+    }
+
+    pub fn last_retention_active_segment(&self) -> Option<SegmentId> {
+        self.last_retention_active_segment
     }
 }
 

@@ -3,7 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::clock::{Clock, SimClock};
@@ -125,6 +125,15 @@ impl FaultConfig {
         Self {
             delayed_io_error_probability: Probability::new(0.05),
             ..Self::none()
+        }
+    }
+
+    pub fn recoverable() -> Self {
+        Self {
+            misdirected_write_probability: Probability::ZERO,
+            misdirected_read_probability: Probability::ZERO,
+            bit_flip_on_read_probability: Probability::ZERO,
+            ..Self::moderate()
         }
     }
 
@@ -257,33 +266,66 @@ struct SimState {
     fds: HashMap<FileId, SimFd>,
     dirs_durable: HashSet<PathBuf>,
     op_log: Vec<OpRecord>,
-    rng_counter: u64,
     next_fd_id: u64,
     next_storage_id: u64,
     pending_syncs: VecDeque<PendingSync>,
     pending_deletes: Vec<PendingDelete>,
 }
 
+const TAG_OPEN_IO: u64 = 100;
+const TAG_READ_IO: u64 = 101;
+const TAG_READ_MISDIR: u64 = 102;
+const TAG_READ_DRIFT_SECTORS: u64 = 103;
+const TAG_READ_DRIFT_DIR: u64 = 104;
+const TAG_READ_BITFLIP: u64 = 105;
+const TAG_READ_FLIP_POS: u64 = 106;
+const TAG_READ_FLIP_BIT: u64 = 107;
+const TAG_WRITE_IO: u64 = 110;
+const TAG_WRITE_TORN: u64 = 111;
+const TAG_WRITE_TORN_SECTORS: u64 = 112;
+const TAG_WRITE_PARTIAL: u64 = 113;
+const TAG_WRITE_PARTIAL_LEN: u64 = 114;
+const TAG_WRITE_MISDIR: u64 = 115;
+const TAG_WRITE_DRIFT_SECTORS: u64 = 116;
+const TAG_WRITE_DRIFT_DIR: u64 = 117;
+const TAG_SYNC_IO: u64 = 120;
+const TAG_SYNC_FAILURE: u64 = 121;
+const TAG_SYNC_DELAYED: u64 = 122;
+const TAG_SYNCDIR_IO: u64 = 130;
+const TAG_SYNCDIR_FAILURE: u64 = 131;
+const TAG_LATENCY: u64 = 140;
+
+fn path_stream(path: &Path) -> u64 {
+    let key = path.file_name().unwrap_or(path.as_os_str());
+    key.to_string_lossy()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
 impl SimState {
-    fn next_random(&mut self, seed: u64) -> f64 {
-        let counter = self.rng_counter;
-        self.rng_counter += 1;
-        let mixed = splitmix64(seed.wrapping_add(counter));
-        (mixed >> 11) as f64 / (1u64 << 53) as f64
+    fn fault_hash(seed: u64, stream: u64, key: u64, tag: u64) -> u64 {
+        let h = splitmix64(seed ^ 0x9E37_79B9_7F4A_7C15);
+        let h = splitmix64(h ^ stream.wrapping_mul(0xD6E8_FEB8_6659_FD93));
+        let h = splitmix64(h ^ key);
+        splitmix64(h ^ tag)
     }
 
-    fn next_random_usize(&mut self, seed: u64, max: usize) -> usize {
+    fn fault_unit(seed: u64, stream: u64, key: u64, tag: u64) -> f64 {
+        (Self::fault_hash(seed, stream, key, tag) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn fault_below(seed: u64, stream: u64, key: u64, tag: u64, probability: Probability) -> bool {
+        probability.is_nonzero() && Self::fault_unit(seed, stream, key, tag) < probability.raw()
+    }
+
+    fn fault_usize(seed: u64, stream: u64, key: u64, tag: u64, max: usize) -> usize {
         if max == 0 {
-            return 0;
+            0
+        } else {
+            (Self::fault_hash(seed, stream, key, tag) as usize) % max
         }
-        let counter = self.rng_counter;
-        self.rng_counter += 1;
-        let mixed = splitmix64(seed.wrapping_add(counter));
-        (mixed as usize) % max
-    }
-
-    fn should_fault(&mut self, seed: u64, probability: Probability) -> bool {
-        probability.is_nonzero() && self.next_random(seed) < probability.raw()
     }
 
     fn alloc_fd_id(&mut self) -> FileId {
@@ -340,7 +382,6 @@ pub struct SimulatedIO {
     fault_config: FaultConfig,
     pristine_mode: AtomicBool,
     rng_seed: u64,
-    latency_counter: AtomicU64,
     clock: SimClock,
 }
 
@@ -353,7 +394,6 @@ impl SimulatedIO {
                 fds: HashMap::new(),
                 dirs_durable: HashSet::new(),
                 op_log: Vec::new(),
-                rng_counter: 0,
                 next_fd_id: 1,
                 next_storage_id: 1,
                 pending_syncs: VecDeque::new(),
@@ -362,7 +402,6 @@ impl SimulatedIO {
             fault_config,
             pristine_mode: AtomicBool::new(false),
             rng_seed: seed,
-            latency_counter: AtomicU64::new(0),
             clock: SimClock::new(seed),
         }
     }
@@ -387,14 +426,11 @@ impl SimulatedIO {
         self.pristine_mode.load(Ordering::Relaxed)
     }
 
-    fn jitter(&self) {
+    fn jitter(&self, stream: u64, key: u64) {
         let max_ns = self.effective_fault_config().latency_distribution_ns.0;
         let extra_ns = match max_ns {
             0 => 0,
-            max => {
-                let c = self.latency_counter.fetch_add(1, Ordering::Relaxed);
-                splitmix64(self.rng_seed.wrapping_add(c)) % max
-            }
+            max => SimState::fault_hash(self.rng_seed, stream, key, TAG_LATENCY) % max,
         };
         self.clock
             .advance(Duration::from_nanos(BASE_IO_SERVICE_NS + extra_ns));
@@ -404,7 +440,7 @@ impl SimulatedIO {
         Self::new(seed, FaultConfig::none())
     }
 
-    pub fn crash(&self) {
+    pub fn crash(&self) -> Vec<PathBuf> {
         let mut state = self.state.lock().unwrap();
 
         state.fds.clear();
@@ -417,11 +453,18 @@ impl SimulatedIO {
             }
         });
 
-        let orphaned: Vec<StorageId> = state
+        let orphaned: HashSet<StorageId> = state
             .storage
             .iter()
             .filter(|(_, s)| !s.dir_entry_durable)
             .map(|(sid, _)| *sid)
+            .collect();
+
+        let removed_paths: Vec<PathBuf> = state
+            .paths
+            .iter()
+            .filter(|(_, sid)| orphaned.contains(sid))
+            .map(|(path, _)| path.clone())
             .collect();
 
         orphaned.iter().for_each(|sid| {
@@ -435,6 +478,8 @@ impl SimulatedIO {
             s.buffered = s.durable.clone();
             s.io_poisoned = false;
         });
+
+        removed_paths
     }
 
     pub fn op_log(&self) -> Vec<OpRecord> {
@@ -492,7 +537,20 @@ impl StorageIO for SimulatedIO {
         let mut state = self.state.lock().unwrap();
         let seed = self.rng_seed;
 
-        if state.should_fault(seed, fault.io_error_probability) {
+        let open_stream = path_stream(path);
+        let existing_size = state
+            .paths
+            .get(path)
+            .and_then(|sid| state.storage.get(sid))
+            .map(|s| s.buffered.len() as u64)
+            .unwrap_or(0);
+        if SimState::fault_below(
+            seed,
+            open_stream,
+            existing_size,
+            TAG_OPEN_IO,
+            fault.io_error_probability,
+        ) {
             return Err(io::Error::other("simulated EIO on open"));
         }
 
@@ -571,24 +629,38 @@ impl StorageIO for SimulatedIO {
     }
 
     fn read_at(&self, id: FileId, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        self.jitter();
         let fault = self.effective_fault_config();
         let mut state = self.state.lock().unwrap();
         let sid = state.require_readable(id)?;
         let seed = self.rng_seed;
+        let stream = sid.0;
+        self.jitter(stream, offset);
 
         if state.storage.get(&sid).is_some_and(|s| s.io_poisoned) {
             return Err(io::Error::other("simulated EIO after delayed sync fault"));
         }
 
-        if state.should_fault(seed, fault.io_error_probability) {
+        if SimState::fault_below(
+            seed,
+            stream,
+            offset,
+            TAG_READ_IO,
+            fault.io_error_probability,
+        ) {
             return Err(io::Error::other("simulated EIO on read"));
         }
 
-        let read_offset = if state.should_fault(seed, fault.misdirected_read_probability) {
-            let drift_sectors = state.next_random_usize(seed, 8) + 1;
+        let read_offset = if SimState::fault_below(
+            seed,
+            stream,
+            offset,
+            TAG_READ_MISDIR,
+            fault.misdirected_read_probability,
+        ) {
+            let drift_sectors =
+                SimState::fault_usize(seed, stream, offset, TAG_READ_DRIFT_SECTORS, 8) + 1;
             let drift = (drift_sectors * SECTOR_BYTES) as u64;
-            if state.next_random(seed) < 0.5 {
+            if SimState::fault_unit(seed, stream, offset, TAG_READ_DRIFT_DIR) < 0.5 {
                 offset.saturating_sub(drift)
             } else {
                 offset.saturating_add(drift)
@@ -614,9 +686,17 @@ impl StorageIO for SimulatedIO {
         let to_read = buf.len().min(available);
         buf[..to_read].copy_from_slice(&storage.buffered[off..off + to_read]);
 
-        if state.should_fault(seed, fault.bit_flip_on_read_probability) && to_read > 0 {
-            let flip_pos = state.next_random_usize(seed, to_read);
-            let flip_bit = state.next_random_usize(seed, 8);
+        if to_read > 0
+            && SimState::fault_below(
+                seed,
+                stream,
+                offset,
+                TAG_READ_BITFLIP,
+                fault.bit_flip_on_read_probability,
+            )
+        {
+            let flip_pos = SimState::fault_usize(seed, stream, offset, TAG_READ_FLIP_POS, to_read);
+            let flip_bit = SimState::fault_usize(seed, stream, offset, TAG_READ_FLIP_BIT, 8);
             buf[flip_pos] ^= 1 << flip_bit;
         }
 
@@ -629,27 +709,47 @@ impl StorageIO for SimulatedIO {
     }
 
     fn write_at(&self, id: FileId, offset: u64, buf: &[u8]) -> io::Result<usize> {
-        self.jitter();
         let fault = self.effective_fault_config();
         let mut state = self.state.lock().unwrap();
         let sid = state.require_writable(id)?;
         let seed = self.rng_seed;
+        let stream = sid.0;
+        self.jitter(stream, offset);
 
         if state.storage.get(&sid).is_some_and(|s| s.io_poisoned) {
             return Err(io::Error::other("simulated EIO after delayed sync fault"));
         }
 
-        if state.should_fault(seed, fault.io_error_probability) {
+        if SimState::fault_below(
+            seed,
+            stream,
+            offset,
+            TAG_WRITE_IO,
+            fault.io_error_probability,
+        ) {
             return Err(io::Error::other("simulated EIO on write"));
         }
 
-        let torn_len = if buf.len() > 1 && state.should_fault(seed, fault.torn_page_probability) {
+        let torn_len = if buf.len() > 1
+            && SimState::fault_below(
+                seed,
+                stream,
+                offset,
+                TAG_WRITE_TORN,
+                fault.torn_page_probability,
+            ) {
             let page_base = (offset as usize) - ((offset as usize) % TORN_PAGE_BYTES);
             let page_end = page_base + TORN_PAGE_BYTES;
             let cap = page_end.saturating_sub(offset as usize).min(buf.len());
             let max_sectors = cap / SECTOR_BYTES;
             (max_sectors >= 2).then(|| {
-                let n = state.next_random_usize(seed, max_sectors - 1) + 1;
+                let n = SimState::fault_usize(
+                    seed,
+                    stream,
+                    offset,
+                    TAG_WRITE_TORN_SECTORS,
+                    max_sectors - 1,
+                ) + 1;
                 n * SECTOR_BYTES
             })
         } else {
@@ -658,18 +758,34 @@ impl StorageIO for SimulatedIO {
 
         let actual_len = match torn_len {
             Some(n) => n,
-            None if buf.len() > 1 && state.should_fault(seed, fault.partial_write_probability) => {
-                let partial = state.next_random_usize(seed, buf.len());
+            None if buf.len() > 1
+                && SimState::fault_below(
+                    seed,
+                    stream,
+                    offset,
+                    TAG_WRITE_PARTIAL,
+                    fault.partial_write_probability,
+                ) =>
+            {
+                let partial =
+                    SimState::fault_usize(seed, stream, offset, TAG_WRITE_PARTIAL_LEN, buf.len());
                 partial.max(1)
             }
             None => buf.len(),
         };
 
-        let misdirected = state.should_fault(seed, fault.misdirected_write_probability);
+        let misdirected = SimState::fault_below(
+            seed,
+            stream,
+            offset,
+            TAG_WRITE_MISDIR,
+            fault.misdirected_write_probability,
+        );
         let write_offset = if misdirected {
-            let drift_sectors = state.next_random_usize(seed, 8) + 1;
+            let drift_sectors =
+                SimState::fault_usize(seed, stream, offset, TAG_WRITE_DRIFT_SECTORS, 8) + 1;
             let drift = (drift_sectors * SECTOR_BYTES) as u64;
-            if state.next_random(seed) < 0.5 {
+            if SimState::fault_unit(seed, stream, offset, TAG_WRITE_DRIFT_DIR) < 0.5 {
                 offset.saturating_sub(drift)
             } else {
                 offset.saturating_add(drift)
@@ -698,21 +814,33 @@ impl StorageIO for SimulatedIO {
     }
 
     fn sync(&self, id: FileId) -> io::Result<()> {
-        self.jitter();
         let fault = self.effective_fault_config();
         let mut state = self.state.lock().unwrap();
         let sid = state.require_open(id)?;
         let seed = self.rng_seed;
+        let stream = sid.0;
+        let fsize = state
+            .storage
+            .get(&sid)
+            .map(|s| s.buffered.len() as u64)
+            .unwrap_or(0);
+        self.jitter(stream, fsize);
 
         if state.storage.get(&sid).is_some_and(|s| s.io_poisoned) {
             return Err(io::Error::other("simulated EIO after delayed sync fault"));
         }
 
-        if state.should_fault(seed, fault.io_error_probability) {
+        if SimState::fault_below(seed, stream, fsize, TAG_SYNC_IO, fault.io_error_probability) {
             return Err(io::Error::other("simulated EIO on sync"));
         }
 
-        if state.should_fault(seed, fault.sync_failure_probability) {
+        if SimState::fault_below(
+            seed,
+            stream,
+            fsize,
+            TAG_SYNC_FAILURE,
+            fault.sync_failure_probability,
+        ) {
             state.op_log.push(OpRecord::Sync {
                 fd: id,
                 succeeded: false,
@@ -720,7 +848,13 @@ impl StorageIO for SimulatedIO {
             return Err(io::Error::other("simulated dropped fsync"));
         }
 
-        let poison_after = state.should_fault(seed, fault.delayed_io_error_probability);
+        let poison_after = SimState::fault_below(
+            seed,
+            stream,
+            fsize,
+            TAG_SYNC_DELAYED,
+            fault.delayed_io_error_probability,
+        );
         let reorder_window = fault.sync_reorder_window.0 as usize;
 
         let evicted = if reorder_window > 0 {
@@ -838,7 +972,7 @@ impl StorageIO for SimulatedIO {
     }
 
     fn barrier(&self) -> io::Result<()> {
-        self.jitter();
+        self.jitter(0, 0);
         let mut state = self.state.lock().unwrap();
         let drained: Vec<PendingSync> = state.pending_syncs.drain(..).collect();
         drained.into_iter().for_each(|p| {
@@ -855,12 +989,31 @@ impl StorageIO for SimulatedIO {
         let mut state = self.state.lock().unwrap();
         let seed = self.rng_seed;
 
-        if state.should_fault(seed, fault.io_error_probability) {
+        let dir_stream = path_stream(path);
+        let dir_entries = state
+            .paths
+            .keys()
+            .filter(|p| p.parent() == Some(path))
+            .count() as u64;
+
+        if SimState::fault_below(
+            seed,
+            dir_stream,
+            dir_entries,
+            TAG_SYNCDIR_IO,
+            fault.io_error_probability,
+        ) {
             return Err(io::Error::other("simulated EIO on sync_dir"));
         }
 
         let dir_path = path.to_path_buf();
-        let actually_persisted = !state.should_fault(seed, fault.dir_sync_failure_probability);
+        let actually_persisted = !SimState::fault_below(
+            seed,
+            dir_stream,
+            dir_entries,
+            TAG_SYNCDIR_FAILURE,
+            fault.dir_sync_failure_probability,
+        );
 
         if actually_persisted {
             state.dirs_durable.insert(dir_path.clone());

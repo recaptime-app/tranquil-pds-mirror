@@ -15,13 +15,13 @@ use super::op::{DidSeed, EventKind, Op, OpStream, PayloadSeed, RetentionSecs, Se
 use super::oracle::{CidFormatError, EventExpectation, Oracle, hex_short, try_cid_to_fixed};
 use super::workload::{Lcg, OpCount, SizeDistribution, ValueBytes, WorkloadModel};
 use crate::blockstore::{
-    BlockStoreConfig, CidBytes, CompactionError, GroupCommitConfig, TranquilBlockStore,
+    BlockStoreConfig, CidBytes, CompactionError, DataFileId, GroupCommitConfig, TranquilBlockStore,
     hash_to_cid, hash_to_cid_bytes,
 };
 use crate::clock::{Clock, SimClock, SystemClock};
 use crate::eventlog::{
     DEFAULT_INDEX_INTERVAL, DidHash, EventLogWriter, EventTypeTag, MAX_EVENT_PAYLOAD, SegmentId,
-    SegmentManager, SegmentReader, ValidEvent,
+    SegmentManager, SegmentReader, ValidEvent, parse_segment_id,
 };
 use crate::io::{RealIO, StorageIO};
 use crate::sim::{FaultConfig, PristineGuard, SimulatedIO};
@@ -404,7 +404,7 @@ async fn run_inner_real_on_root(
             op_errors_counter,
             restarts_counter,
             open,
-            || {},
+            Vec::new,
             tolerate_op_errors,
             reopen_backoff,
             SystemClock,
@@ -419,7 +419,7 @@ async fn run_inner_real_on_root(
             op_errors_counter,
             restarts_counter,
             open,
-            || {},
+            Vec::new,
             tolerate_op_errors,
             reopen_backoff,
             SystemClock,
@@ -438,7 +438,8 @@ async fn run_inner_simulated(
     restarts_counter: Arc<AtomicUsize>,
 ) -> GauntletReport {
     let dir = tempfile::TempDir::new().expect("tempdir");
-    let cfg = blockstore_config(dir.path(), &config.store);
+    let mut cfg = blockstore_config(dir.path(), &config.store);
+    cfg.group_commit.synchronous = config.writer_concurrency.0 == 1;
     let tolerate_errors = fault.injects_errors() || config.tolerate_op_errors;
     let eventlog_cfg = config.eventlog;
     let segments_dir = segments_subdir(dir.path());
@@ -551,7 +552,7 @@ where
     S: StorageIO + Send + Sync + 'static,
     C: Clock,
     Open: FnMut(usize) -> Result<Harness<S, C>, String>,
-    Crash: FnMut(),
+    Crash: FnMut() -> Vec<PathBuf>,
     Quiesce: Fn(bool),
 {
     let mut oracle = Oracle::new();
@@ -614,8 +615,8 @@ where
             continue;
         }
         if crashing {
-            crash();
-            oracle.record_crash();
+            let removed = crash();
+            record_crash_losses(&removed, harness.as_ref(), &mut oracle);
         }
         shutdown_harness(&mut harness);
         match reopen_with_recovery(&mut open, &mut crash, tolerate_op_errors, reopen_backoff).await
@@ -655,8 +656,8 @@ where
 
     quiesce_faults(true);
     if !halt_ops && tolerate_op_errors && harness.is_some() {
-        crash();
-        oracle.record_crash();
+        let removed = crash();
+        record_crash_losses(&removed, harness.as_ref(), &mut oracle);
         shutdown_harness(&mut harness);
         match reopen_with_recovery(&mut open, &mut crash, tolerate_op_errors, reopen_backoff).await
         {
@@ -794,6 +795,41 @@ fn shutdown_harness<S: StorageIO + Send + Sync + 'static, C: Clock>(
     let _ = harness.take();
 }
 
+fn record_crash_losses<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    removed: &[PathBuf],
+    harness: Option<&Harness<S, C>>,
+    oracle: &mut Oracle,
+) {
+    mark_block_crash_losses(removed, harness, oracle);
+    mark_event_crash_losses(removed, oracle);
+    oracle.record_crash();
+}
+
+fn mark_block_crash_losses<S: StorageIO + Send + Sync + 'static, C: Clock>(
+    removed: &[PathBuf],
+    harness: Option<&Harness<S, C>>,
+    oracle: &mut Oracle,
+) {
+    let Some(h) = harness else { return };
+    let data_dir = h.store.data_dir();
+    let lost: Vec<CidBytes> = removed
+        .iter()
+        .filter(|p| p.parent() == Some(data_dir))
+        .filter_map(|p| p.file_stem()?.to_str()?.parse::<u32>().ok())
+        .map(DataFileId::new)
+        .flat_map(|fid| h.store.block_index().cids_in_file(fid))
+        .collect();
+    if !lost.is_empty() {
+        oracle.mark_blocks_lost(lost);
+    }
+}
+
+fn mark_event_crash_losses(removed: &[PathBuf], oracle: &mut Oracle) {
+    let lost: std::collections::HashSet<SegmentId> =
+        removed.iter().filter_map(|p| parse_segment_id(p)).collect();
+    oracle.forget_events_in_segments(&lost);
+}
+
 const MAX_REOPEN_ATTEMPTS: usize = 5;
 
 async fn reopen_with_recovery<S, C, Open, Crash>(
@@ -806,7 +842,7 @@ where
     S: StorageIO + Send + Sync + 'static,
     C: Clock,
     Open: FnMut(usize) -> Result<Harness<S, C>, String>,
-    Crash: FnMut(),
+    Crash: FnMut() -> Vec<PathBuf>,
 {
     let mut errors: Vec<String> = Vec::new();
     for attempt in 0..MAX_REOPEN_ATTEMPTS {
@@ -1234,11 +1270,13 @@ pub(super) async fn apply_op<S: StorageIO + Send + Sync + 'static, C: Clock>(
             let ts_before = clock.unix_micros().raw();
             match el.writer.append_with_clock(did_hash, tag, payload, clock) {
                 Ok(seq) => {
+                    let segment = el.writer.active_segment_id();
                     oracle.record_event_append(EventExpectation {
                         seq,
                         timestamp_us: ts_before,
                         kind: *event_kind,
                         did_hash: did_hash.raw(),
+                        segment,
                     });
                     let _ = el.writer.rotate_if_needed();
                     Ok(())
@@ -1307,7 +1345,7 @@ fn externally_delete_data_file<S: StorageIO + Send + Sync + 'static, C: Clock>(
         Ok(files) => files,
         Err(_) => return Ok(Vec::new()),
     };
-    candidates.retain(|fid| active.is_none_or(|a| *fid < a));
+    candidates.retain(|fid| active.is_some_and(|a| *fid < a));
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
@@ -1349,7 +1387,7 @@ fn run_retention<S: StorageIO + Send + Sync + 'static, C: Clock>(
                 _ => Ok(()),
             }
         })?;
-    oracle.record_retention(cutoff_us);
+    oracle.record_retention(cutoff_us, active_id);
     Ok(())
 }
 
@@ -1480,11 +1518,12 @@ fn compact_by_liveness<S: StorageIO + Send + Sync + 'static, C: Clock>(
     let liveness = store
         .compaction_liveness(0)
         .map_err(|e| OpError::CompactFile(format!("compaction_liveness: {e}")))?;
-    let targets: Vec<_> = liveness
+    let mut targets: Vec<_> = liveness
         .iter()
         .filter(|(_, info)| info.total_blocks > 0 && info.ratio() < COMPACT_LIVENESS_CEILING)
         .map(|(&fid, _)| fid)
         .collect();
+    targets.sort_unstable();
     targets
         .into_iter()
         .try_for_each(|fid| match store.compact_file(fid, 0) {
@@ -1575,12 +1614,14 @@ async fn apply_op_concurrent<S: StorageIO + Send + Sync + 'static, C: Clock>(
             };
             match el.writer.append_with_clock(did_hash, tag, payload, clock) {
                 Ok(seq) => {
+                    let segment = el.writer.active_segment_id();
                     let _ = el.writer.rotate_if_needed();
                     state.oracle.record_event_append(EventExpectation {
                         seq,
                         timestamp_us: ts_before,
                         kind: *event_kind,
                         did_hash: did_hash.raw(),
+                        segment,
                     });
                     Ok(())
                 }
@@ -1726,7 +1767,7 @@ where
     S: StorageIO + Send + Sync + 'static,
     C: Clock,
     Open: FnMut(usize) -> Result<Harness<S, C>, String>,
-    Crash: FnMut(),
+    Crash: FnMut() -> Vec<PathBuf>,
     Quiesce: Fn(bool),
 {
     let ops: Vec<Op> = op_stream.into_vec();
@@ -1840,8 +1881,8 @@ where
             RestartAction::None => {}
             RestartAction::Clean | RestartAction::Crash => {
                 if matches!(action, RestartAction::Crash) {
-                    crash();
-                    oracle.record_crash();
+                    let removed = crash();
+                    record_crash_losses(&removed, harness.as_ref(), &mut oracle);
                 }
                 shutdown_harness(&mut harness);
                 match reopen_with_recovery(
@@ -1888,8 +1929,8 @@ where
 
     quiesce_faults(true);
     if !halt_ops && tolerate_op_errors && harness.is_some() {
-        crash();
-        oracle.record_crash();
+        let removed = crash();
+        record_crash_losses(&removed, harness.as_ref(), &mut oracle);
         shutdown_harness(&mut harness);
         match reopen_with_recovery(&mut open, &mut crash, tolerate_op_errors, reopen_backoff).await
         {
@@ -2052,7 +2093,7 @@ mod tests {
                 store_cfg,
                 clock.clone(),
             ),
-            || {},
+            Vec::new,
             true,
             Duration::ZERO,
             clock,
@@ -2098,7 +2139,7 @@ mod tests {
                 store_cfg,
                 clock.clone(),
             ),
-            || {},
+            Vec::new,
             true,
             Duration::ZERO,
             clock,

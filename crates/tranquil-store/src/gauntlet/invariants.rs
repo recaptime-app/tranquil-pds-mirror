@@ -146,7 +146,7 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for Refcoun
 
         let inverse: Vec<String> = index
             .iter()
-            .filter(|(cid, _)| !live_set.contains(*cid))
+            .filter(|(cid, _)| !live_set.contains(*cid) && !ctx.oracle.lost_blocks().contains(*cid))
             .map(|(cid, r)| format!("orphan cid {} refcount {}", hex_short(cid), r))
             .collect();
 
@@ -501,10 +501,12 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for IndexBl
 
     async fn check(&self, ctx: &InvariantCtx<'_, S, C>) -> Result<(), InvariantViolation> {
         let store_c = ctx.store.clone();
+        let lost = ctx.oracle.lost_blocks().clone();
         let result = tokio::task::spawn_blocking(move || {
             let entries = store_c.block_index().live_entries_snapshot();
             let unreadable: Vec<String> = entries
                 .iter()
+                .filter(|(cid, _)| !lost.contains(cid))
                 .take(INDEX_READABLE_SAMPLE_CAP)
                 .filter_map(|(cid, _)| match store_c.get_block_sync(cid) {
                     Ok(Some(_)) => None,
@@ -900,21 +902,37 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for FsyncOr
         if !missing.is_empty() {
             let mut sorted = missing;
             sorted.sort_unstable();
+            let ts_by_seq: HashMap<u64, u64> = ctx
+                .oracle
+                .synced_events()
+                .iter()
+                .map(|e| (e.seq.raw(), e.timestamp_us))
+                .collect();
+            let cutoff = ctx.oracle.last_retention_cutoff_us();
+            let detail: Vec<String> = sorted
+                .iter()
+                .take(5)
+                .map(|seq| {
+                    let ts = ts_by_seq.get(seq).copied().unwrap_or(0);
+                    let below = cutoff.is_some_and(|c| ts < c);
+                    format!("seq {seq} ts {ts} below_cutoff {below}")
+                })
+                .collect();
             violations.push(format!(
-                "{} acked events lost on disk, lowest missing seq {}",
+                "{} acked events lost on disk, cutoff {cutoff:?}: {}",
                 sorted.len(),
-                sorted[0]
+                detail.join(", ")
             ));
         }
 
-        if let Some(last_synced) = ctx.oracle.last_synced_seq()
+        let retained_synced_max = ctx.oracle.synced_events().iter().map(|e| e.seq.raw()).max();
+        if let Some(expected) = retained_synced_max
             && el.synced_seq.raw() != 0
-            && el.synced_seq.raw() < last_synced.raw()
+            && el.synced_seq.raw() < expected
         {
             violations.push(format!(
-                "writer synced_seq {} below oracle last_synced_seq {}",
-                el.synced_seq.raw(),
-                last_synced.raw()
+                "writer synced_seq {} below retained acked seq {expected}",
+                el.synced_seq.raw()
             ));
         }
 
@@ -946,11 +964,14 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> Invariant<S, C> for Tombsto
         };
 
         let active = el.segments.last().copied();
+        let retention_active = ctx.oracle.last_retention_active_segment();
 
         let stale: Vec<String> = el
             .segment_last_ts
             .iter()
-            .filter(|(id, last_ts)| Some(*id) != active && *last_ts < cutoff_us)
+            .filter(|(id, last_ts)| {
+                Some(*id) != active && Some(*id) != retention_active && *last_ts < cutoff_us
+            })
             .map(|(id, last_ts)| format!("segment {id} last_ts {last_ts} < cutoff {cutoff_us}"))
             .collect();
 
