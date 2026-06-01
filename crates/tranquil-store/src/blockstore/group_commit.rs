@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::thread;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use crate::clock::{Clock, LogicalNanos};
 use crate::fsync_order::PostBlockstoreHook;
@@ -218,6 +218,7 @@ pub struct GroupCommitConfig {
     pub checkpoint_interval_ms: u64,
     pub checkpoint_write_threshold: u64,
     pub verify_persisted_blocks: bool,
+    pub synchronous: bool,
 }
 
 impl Default for GroupCommitConfig {
@@ -228,6 +229,7 @@ impl Default for GroupCommitConfig {
             checkpoint_interval_ms: 60_000,
             checkpoint_write_threshold: 100_000,
             verify_persisted_blocks: false,
+            synchronous: false,
         }
     }
 }
@@ -259,9 +261,50 @@ fn log_thread_panic(payload: Box<dyn std::any::Any + Send>, context: &str) {
     tracing::error!(panic = msg, "{context}");
 }
 
-struct SingleShardWriter {
-    sender: flume::Sender<CommitRequest>,
-    handle: Option<thread::JoinHandle<()>>,
+trait InlineHandler: Send {
+    fn handle(&mut self, req: CommitRequest);
+    fn finalize(&mut self);
+}
+
+struct InlineState<S: StorageIO + 'static, C: Clock> {
+    manager: DataFileManager<S>,
+    index: Arc<BlockIndex>,
+    config: GroupCommitConfig,
+    state: ActiveState,
+    ctx: ShardContext<C>,
+    post_sync_hook: Option<Arc<dyn PostBlockstoreHook>>,
+    last_checkpoint: LogicalNanos,
+    writes_since_checkpoint: u64,
+}
+
+impl<S: StorageIO + 'static, C: Clock> InlineHandler for InlineState<S, C> {
+    fn handle(&mut self, req: CommitRequest) {
+        handle_request(
+            req,
+            &self.manager,
+            &self.index,
+            &self.config,
+            &mut self.state,
+            self.post_sync_hook.as_deref(),
+            &self.ctx,
+            &mut self.last_checkpoint,
+            &mut self.writes_since_checkpoint,
+        );
+    }
+
+    fn finalize(&mut self) {
+        shutdown_checkpoint(&self.index, &self.ctx.epoch, &self.ctx.hint_positions);
+    }
+}
+
+enum SingleShardWriter {
+    Threaded {
+        sender: flume::Sender<CommitRequest>,
+        handle: Option<thread::JoinHandle<()>>,
+    },
+    Inline {
+        handler: Mutex<Box<dyn InlineHandler>>,
+    },
 }
 
 impl SingleShardWriter {
@@ -277,6 +320,23 @@ impl SingleShardWriter {
         ctx.active_files.register(ctx.shard_id, state.file_id);
         ctx.hint_positions
             .update(ctx.shard_id, state.file_id, state.hint_position);
+
+        if config.synchronous {
+            let last_checkpoint = ctx.clock.monotonic();
+            let inline = InlineState {
+                manager,
+                index,
+                config,
+                state,
+                ctx,
+                post_sync_hook,
+                last_checkpoint,
+                writes_since_checkpoint: 0,
+            };
+            return Ok(Self::Inline {
+                handler: Mutex::new(Box::new(inline)),
+            });
+        }
 
         let (sender, receiver) = flume::bounded(config.channel_capacity);
 
@@ -295,29 +355,48 @@ impl SingleShardWriter {
             })
             .map_err(|e| CommitError::from(io::Error::other(e)))?;
 
-        Ok(Self {
+        Ok(Self::Threaded {
             sender,
             handle: Some(handle),
         })
     }
 
+    fn submit(&self, request: CommitRequest) -> Result<(), CommitError> {
+        match self {
+            Self::Threaded { sender, .. } => {
+                sender.send(request).map_err(|_| CommitError::ChannelClosed)
+            }
+            Self::Inline { handler } => {
+                handler.lock().handle(request);
+                Ok(())
+            }
+        }
+    }
+
     fn shutdown(&mut self) {
-        let _ = self.sender.send(CommitRequest::Shutdown);
-        if let Some(handle) = self.handle.take()
-            && let Err(payload) = handle.join()
-        {
-            log_thread_panic(payload, "group commit thread panicked");
+        match self {
+            Self::Threaded { sender, handle } => {
+                let _ = sender.send(CommitRequest::Shutdown);
+                if let Some(handle) = handle.take()
+                    && let Err(payload) = handle.join()
+                {
+                    log_thread_panic(payload, "group commit thread panicked");
+                }
+            }
+            Self::Inline { handler } => handler.lock().finalize(),
         }
     }
 }
 
 impl Drop for SingleShardWriter {
     fn drop(&mut self) {
-        let _ = self.sender.try_send(CommitRequest::Shutdown);
-        if let Some(handle) = self.handle.take()
-            && let Err(payload) = handle.join()
-        {
-            log_thread_panic(payload, "group commit thread panicked during drop");
+        if let Self::Threaded { sender, handle } = self {
+            let _ = sender.try_send(CommitRequest::Shutdown);
+            if let Some(handle) = handle.take()
+                && let Err(payload) = handle.join()
+            {
+                log_thread_panic(payload, "group commit thread panicked during drop");
+            }
         }
     }
 }
@@ -478,19 +557,49 @@ impl GroupCommitWriter {
         &self.epoch
     }
 
-    pub fn sender_round_robin(&self) -> &flume::Sender<CommitRequest> {
-        let idx = self
-            .round_robin
+    fn round_robin_index(&self) -> usize {
+        self.round_robin
             .fetch_add(1, Ordering::Relaxed)
-            .wrapping_rem(self.shard_count) as usize;
-        &self.shards[idx].sender
+            .wrapping_rem(self.shard_count) as usize
+    }
+
+    fn shard_index_for(&self, request: &CommitRequest) -> usize {
+        match request {
+            CommitRequest::PutBlocks { blocks, .. } => {
+                pick_shard_for_blocks(blocks, self.shard_count)
+            }
+            CommitRequest::ApplyCommit {
+                blocks,
+                deleted_cids,
+                ..
+            } => pick_shard_for_apply(blocks, deleted_cids, self.shard_count),
+            CommitRequest::Compact { .. }
+            | CommitRequest::RepairLeaked { .. }
+            | CommitRequest::RepairBlocks { .. }
+            | CommitRequest::Quiesce { .. }
+            | CommitRequest::Shutdown => self.round_robin_index(),
+        }
+    }
+
+    pub fn submit_blocking(&self, request: CommitRequest) -> Result<(), CommitError> {
+        let idx = self.shard_index_for(&request);
+        self.shards[idx].submit(request)
+    }
+
+    fn threaded_sender(shard: &SingleShardWriter) -> &flume::Sender<CommitRequest> {
+        match shard {
+            SingleShardWriter::Threaded { sender, .. } => sender,
+            SingleShardWriter::Inline { .. } => unreachable!(
+                "async commit path requires threaded group-commit; synchronous mode is gauntlet-blocking-only"
+            ),
+        }
     }
 
     pub fn sender_for_blocks(
         &self,
         blocks: &[([u8; CID_SIZE], Vec<u8>)],
     ) -> &flume::Sender<CommitRequest> {
-        &self.shards[pick_shard_for_blocks(blocks, self.shard_count)].sender
+        Self::threaded_sender(&self.shards[pick_shard_for_blocks(blocks, self.shard_count)])
     }
 
     pub fn sender_for_apply(
@@ -498,7 +607,9 @@ impl GroupCommitWriter {
         blocks: &[([u8; CID_SIZE], Vec<u8>)],
         deleted_cids: &[[u8; CID_SIZE]],
     ) -> &flume::Sender<CommitRequest> {
-        &self.shards[pick_shard_for_apply(blocks, deleted_cids, self.shard_count)].sender
+        Self::threaded_sender(
+            &self.shards[pick_shard_for_apply(blocks, deleted_cids, self.shard_count)],
+        )
     }
 
     pub fn quiesce_all(
@@ -510,13 +621,18 @@ impl GroupCommitWriter {
             .map(|shard| {
                 let (response_tx, response_rx) = tokio::sync::oneshot::channel();
                 let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
-                shard
-                    .sender
-                    .send(CommitRequest::Quiesce {
-                        response: response_tx,
-                        resume: resume_rx,
-                    })
-                    .map_err(|_| CommitError::ChannelClosed)?;
+                let req = CommitRequest::Quiesce {
+                    response: response_tx,
+                    resume: resume_rx,
+                };
+                match shard {
+                    SingleShardWriter::Threaded { sender, .. } => {
+                        sender.send(req).map_err(|_| CommitError::ChannelClosed)?;
+                    }
+                    SingleShardWriter::Inline { handler } => {
+                        handler.lock().handle(req);
+                    }
+                }
                 Ok((response_rx, resume_tx))
             })
             .collect();
@@ -567,10 +683,13 @@ impl GroupCommitWriter {
 impl Drop for GroupCommitWriter {
     fn drop(&mut self) {
         self.shards.iter_mut().for_each(|s| {
-            let _ = s.sender.try_send(CommitRequest::Shutdown);
+            if let SingleShardWriter::Threaded { sender, .. } = s {
+                let _ = sender.try_send(CommitRequest::Shutdown);
+            }
         });
         self.shards.iter_mut().for_each(|s| {
-            if let Some(handle) = s.handle.take()
+            if let SingleShardWriter::Threaded { handle, .. } = s
+                && let Some(handle) = handle.take()
                 && let Err(payload) = handle.join()
             {
                 log_thread_panic(payload, "group commit thread panicked during drop");
@@ -1105,6 +1224,95 @@ fn commit_loop<S: StorageIO, C: Clock>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn handle_request<S: StorageIO, C: Clock>(
+    req: CommitRequest,
+    manager: &DataFileManager<S>,
+    index: &BlockIndex,
+    config: &GroupCommitConfig,
+    state: &mut ActiveState,
+    post_sync_hook: Option<&dyn PostBlockstoreHook>,
+    ctx: &ShardContext<C>,
+    last_checkpoint: &mut LogicalNanos,
+    writes_since_checkpoint: &mut u64,
+) {
+    let epoch = &ctx.epoch;
+    match classify_request(req) {
+        ClassifyResult::Shutdown => {}
+        ClassifyResult::Compact {
+            file_id,
+            grace_period_ms,
+            response,
+        } => {
+            let result = compaction::compact_on_writer_thread(
+                manager,
+                index,
+                file_id,
+                epoch.current(),
+                grace_period_ms,
+                &ctx.file_ids,
+                &ctx.active_files,
+                &ctx.hint_positions,
+                epoch,
+                ctx.clock.wall_millis(),
+            );
+            let _ = response.send(result);
+        }
+        ClassifyResult::Repair {
+            leaked_cids,
+            response,
+        } => {
+            let repaired = index.repair_leaked_refcounts(
+                &leaked_cids,
+                epoch.current(),
+                ctx.clock.wall_millis(),
+            );
+            let _ = response.send(Ok(repaired));
+        }
+        ClassifyResult::RepairBlocks { blocks, response } => {
+            let result = compaction::repair_blocks_on_writer_thread(
+                manager,
+                index,
+                &blocks,
+                epoch.current(),
+                &ctx.file_ids,
+                &ctx.hint_positions,
+                epoch,
+            );
+            let _ = response.send(result);
+        }
+        ClassifyResult::Quiesce { response, resume } => {
+            let snapshot = capture_snapshot(manager, state, epoch);
+            let _ = response.send(snapshot);
+            drop(resume);
+        }
+        ClassifyResult::Batch(entry) => {
+            let entries = vec![entry];
+            let result = process_batch(manager, index, &entries, state, ctx);
+            if let Ok((ref _dedup, ref proof)) = result {
+                run_post_sync_hook(post_sync_hook, proof);
+            }
+            if let Err(ref e) = result {
+                tracing::warn!(error = %e, "commit batch failed");
+            }
+            if let Ok((ref dedup, _)) = result {
+                *writes_since_checkpoint =
+                    writes_since_checkpoint.saturating_add(dedup.len() as u64);
+            }
+            dispatch_responses(entries, result.map(|(dedup, _proof)| dedup));
+            maybe_checkpoint(
+                index,
+                epoch,
+                config,
+                &ctx.clock,
+                last_checkpoint,
+                writes_since_checkpoint,
+                &ctx.hint_positions,
+            );
+        }
+    }
+}
+
 fn run_post_sync_hook(hook: Option<&dyn PostBlockstoreHook>, proof: &BlocksSynced) {
     if let Some(hook) = hook
         && let Err(e) = hook.on_blocks_synced(proof)
@@ -1211,17 +1419,32 @@ fn verify_persisted_blocks<S: StorageIO>(
 
     by_file.into_iter().try_for_each(|(file_id, locations)| {
         let path = manager.data_file_path(file_id);
-        let fd = match manager.io().open(&path, OpenOptions::read_only_existing()) {
-            Ok(fd) => fd,
-            Err(_) => return Ok(()),
-        };
-        let file_size = match manager.io().file_size(fd) {
-            Ok(s) => s,
-            Err(_) => {
-                let _ = manager.io().close(fd);
-                return Ok(());
+        let probe_offset = locations[0].1.offset;
+        let fd = match (0..VERIFY_RETRY_ATTEMPTS).find_map(|_| {
+            manager
+                .io()
+                .open(&path, OpenOptions::read_only_existing())
+                .ok()
+        }) {
+            Some(fd) => fd,
+            None => {
+                return Err(CommitError::VerifyFailed {
+                    file_id,
+                    offset: probe_offset,
+                });
             }
         };
+        let file_size =
+            match (0..VERIFY_RETRY_ATTEMPTS).find_map(|_| manager.io().file_size(fd).ok()) {
+                Some(s) => s,
+                None => {
+                    let _ = manager.io().close(fd);
+                    return Err(CommitError::VerifyFailed {
+                        file_id,
+                        offset: probe_offset,
+                    });
+                }
+            };
         let result = locations.into_iter().try_for_each(|(expected_cid, loc)| {
             verify_block_at(manager, fd, file_size, expected_cid, loc)
         });
@@ -1234,6 +1457,7 @@ fn verify_persisted_blocks<S: StorageIO>(
 enum VerifyOutcome {
     NoFaultDetected,
     Faulted,
+    Inconclusive,
 }
 
 fn verify_block_at<S: StorageIO>(
@@ -1243,15 +1467,16 @@ fn verify_block_at<S: StorageIO>(
     expected_cid: &[u8; CID_SIZE],
     loc: BlockLocation,
 ) -> Result<(), CommitError> {
-    let passed = (0..VERIFY_RETRY_ATTEMPTS).any(|_| {
-        matches!(
-            verify_once(manager, fd, file_size, expected_cid, loc),
-            VerifyOutcome::NoFaultDetected
-        )
+    let verdict = (0..VERIFY_RETRY_ATTEMPTS).find_map(|_| {
+        match verify_once(manager, fd, file_size, expected_cid, loc) {
+            VerifyOutcome::NoFaultDetected => Some(true),
+            VerifyOutcome::Faulted => Some(false),
+            VerifyOutcome::Inconclusive => None,
+        }
     });
-    match passed {
-        true => Ok(()),
-        false => Err(CommitError::VerifyFailed {
+    match verdict {
+        Some(true) => Ok(()),
+        Some(false) | None => Err(CommitError::VerifyFailed {
             file_id: loc.file_id,
             offset: loc.offset,
         }),
@@ -1286,23 +1511,33 @@ fn verify_once<S: StorageIO>(
             );
             VerifyOutcome::Faulted
         }
-        Err(_) => VerifyOutcome::NoFaultDetected,
+        Err(_) => VerifyOutcome::Inconclusive,
     }
 }
 
 const VERIFY_RETRY_ATTEMPTS: u32 = 4;
+
+const ROLLBACK_TRUNCATE_ATTEMPTS: u32 = 8;
+
+fn truncate_and_sync_durably<S: StorageIO>(io: &S, fd: FileId, offset: u64) {
+    let ok = (0..ROLLBACK_TRUNCATE_ATTEMPTS)
+        .any(|_| io.truncate(fd, offset).and_then(|()| io.sync(fd)).is_ok());
+    if !ok {
+        tracing::error!(
+            offset,
+            "rollback could not durably truncate uncommitted tail; recovery may resurrect it"
+        );
+    }
+}
 
 fn rollback_batch<S: StorageIO>(
     manager: &DataFileManager<S>,
     state: &ActiveState,
     rotations: &[RotationState<S>],
 ) {
-    let _ = manager.io().truncate(state.fd, state.position.raw());
-    let _ = manager.io().sync(state.fd);
-    let _ = manager
-        .io()
-        .truncate(state.hint_fd, state.hint_position.raw());
-    let _ = manager.io().sync(state.hint_fd);
+    truncate_and_sync_durably(manager.io(), state.fd, state.position.raw());
+    truncate_and_sync_durably(manager.io(), state.hint_fd, state.hint_position.raw());
+    let _ = manager.io().barrier();
     rotations.iter().for_each(|rot| {
         manager.rollback_rotation(rot.file_id);
         let _ = manager.io().close(rot.hint_fd);

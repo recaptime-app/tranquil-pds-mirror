@@ -123,6 +123,7 @@ pub struct TranquilBlockStore<S: StorageIO + Send + Sync + 'static, C: Clock> {
     epoch: EpochCounter,
     data_dir: PathBuf,
     clock: C,
+    synchronous: bool,
 }
 
 impl<S: StorageIO + Send + Sync + 'static, C: Clock> Clone for TranquilBlockStore<S, C> {
@@ -134,6 +135,7 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> Clone for TranquilBlockStor
             epoch: self.epoch.clone(),
             data_dir: self.data_dir.clone(),
             clock: self.clock.clone(),
+            synchronous: self.synchronous,
         }
     }
 }
@@ -299,6 +301,7 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
 
         let checkpoint_epoch = index.loaded_checkpoint_epoch();
         let checkpoint_positions = index.loaded_checkpoint_positions();
+        let synchronous = config.group_commit.synchronous;
         let writer = GroupCommitWriter::spawn_sharded(
             make_manager,
             Arc::clone(&index),
@@ -331,6 +334,7 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
             epoch,
             data_dir,
             clock,
+            synchronous,
         })
     }
 
@@ -388,8 +392,15 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
             })
             .is_ok();
 
-        let result =
-            Self::scan_and_index(io, index, fd, file_id, start_offset, indexed_end, hint_exists);
+        let result = Self::scan_and_index(
+            io,
+            index,
+            fd,
+            file_id,
+            start_offset,
+            indexed_end,
+            hint_exists,
+        );
 
         let _ = io.close(fd);
 
@@ -462,7 +473,11 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
             RepoError::storage(e)
         })?;
 
-        let keep_end = last_valid_end.max(indexed_end);
+        let committed_end = BlockOffset::new(start_offset.raw().max(indexed_end.raw()));
+        let keep_end = match hint_exists {
+            true => committed_end,
+            false => last_valid_end.max(indexed_end),
+        };
 
         if file_size > keep_end.raw() {
             tracing::info!(
@@ -470,26 +485,30 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
                 truncating_from = keep_end.raw(),
                 file_size,
                 scanned_count = scanned_entries.len(),
-                "truncating partial/unacked tail"
+                "truncating uncommitted tail"
             );
             io.truncate(fd, keep_end.raw())
                 .map_err(RepoError::storage)?;
             io.sync(fd).map_err(RepoError::storage)?;
         }
 
-        if !scanned_entries.is_empty() {
+        let indexable: Vec<_> = scanned_entries
+            .into_iter()
+            .filter(|(_, loc)| loc.offset.raw() < keep_end.raw())
+            .collect();
+        if !indexable.is_empty() {
             tracing::info!(
                 file_id = %file_id,
-                scanned = scanned_entries.len(),
+                scanned = indexable.len(),
                 hint_exists,
-                "reindexing blocks past hint coverage"
+                "reindexing blocks within committed extent"
             );
             let cursor = super::types::WriteCursor {
                 file_id,
                 offset: keep_end,
             };
             index
-                .batch_put_if_absent(&scanned_entries, cursor)
+                .batch_put_if_absent(&indexable, cursor)
                 .map_err(|e| RepoError::storage(io::Error::other(e.to_string())))?;
         }
 
@@ -536,16 +555,15 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         grace_period_ms: u64,
     ) -> Result<CompactionResult, CompactionError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let sender = self
-            .writer
-            .with(|w| w.sender_round_robin().clone())
-            .map_err(|_| CompactionError::ChannelClosed)?;
-        sender
-            .send(CommitRequest::Compact {
-                file_id,
-                grace_period_ms,
-                response: tx,
+        self.writer
+            .with(|w| {
+                w.submit_blocking(CommitRequest::Compact {
+                    file_id,
+                    grace_period_ms,
+                    response: tx,
+                })
             })
+            .map_err(|_| CompactionError::ChannelClosed)?
             .map_err(|_| CompactionError::ChannelClosed)?;
         let result = rx
             .blocking_recv()
@@ -595,16 +613,15 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         leaked_cids: &[(super::types::CidBytes, super::types::RefCount)],
     ) -> Result<u64, RepoError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let sender = self
-            .writer
-            .with(|w| w.sender_round_robin().clone())
-            .map_err(commit_error_to_repo)?;
-        sender
-            .send(CommitRequest::RepairLeaked {
-                leaked_cids: leaked_cids.to_vec(),
-                response: tx,
+        self.writer
+            .with(|w| {
+                w.submit_blocking(CommitRequest::RepairLeaked {
+                    leaked_cids: leaked_cids.to_vec(),
+                    response: tx,
+                })
             })
-            .map_err(|_| commit_error_to_repo(CommitError::ChannelClosed))?;
+            .map_err(commit_error_to_repo)?
+            .map_err(commit_error_to_repo)?;
         rx.blocking_recv()
             .map_err(|_| commit_error_to_repo(CommitError::ChannelClosed))?
             .map_err(commit_error_to_repo)
@@ -618,15 +635,14 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
             return Ok(0);
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let sender = self
-            .writer
-            .with(|w| w.sender_round_robin().clone())
-            .map_err(|_| CompactionError::ChannelClosed)?;
-        sender
-            .send(CommitRequest::RepairBlocks {
-                blocks,
-                response: tx,
+        self.writer
+            .with(|w| {
+                w.submit_blocking(CommitRequest::RepairBlocks {
+                    blocks,
+                    response: tx,
+                })
             })
+            .map_err(|_| CompactionError::ChannelClosed)?
             .map_err(|_| CompactionError::ChannelClosed)?;
         rx.blocking_recv()
             .map_err(|_| CompactionError::ChannelClosed)?
@@ -663,17 +679,16 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         if blocks.is_empty() {
             return Ok(());
         }
-        let sender = self
-            .writer
-            .with(|w| w.sender_for_blocks(&blocks).clone())
-            .map_err(commit_error_to_repo)?;
         let (tx, rx) = tokio::sync::oneshot::channel();
-        sender
-            .send(CommitRequest::PutBlocks {
-                blocks,
-                response: tx,
+        self.writer
+            .with(|w| {
+                w.submit_blocking(CommitRequest::PutBlocks {
+                    blocks,
+                    response: tx,
+                })
             })
-            .map_err(|_| commit_error_to_repo(CommitError::ChannelClosed))?;
+            .map_err(commit_error_to_repo)?
+            .map_err(commit_error_to_repo)?;
         rx.blocking_recv()
             .map_err(|_| commit_error_to_repo(CommitError::ChannelClosed))?
             .map_err(commit_error_to_repo)?;
@@ -685,18 +700,17 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         blocks: Vec<([u8; CID_SIZE], Vec<u8>)>,
         deleted_cids: Vec<[u8; CID_SIZE]>,
     ) -> Result<(), RepoError> {
-        let sender = self
-            .writer
-            .with(|w| w.sender_for_apply(&blocks, &deleted_cids).clone())
-            .map_err(commit_error_to_repo)?;
         let (tx, rx) = tokio::sync::oneshot::channel();
-        sender
-            .send(CommitRequest::ApplyCommit {
-                blocks,
-                deleted_cids,
-                response: tx,
+        self.writer
+            .with(|w| {
+                w.submit_blocking(CommitRequest::ApplyCommit {
+                    blocks,
+                    deleted_cids,
+                    response: tx,
+                })
             })
-            .map_err(|_| commit_error_to_repo(CommitError::ChannelClosed))?;
+            .map_err(commit_error_to_repo)?
+            .map_err(commit_error_to_repo)?;
         rx.blocking_recv()
             .map_err(|_| commit_error_to_repo(CommitError::ChannelClosed))?
             .map_err(commit_error_to_repo)
@@ -706,6 +720,22 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         &self,
         blocks: Vec<([u8; CID_SIZE], Vec<u8>)>,
     ) -> Result<Vec<BlockLocation>, RepoError> {
+        if self.synchronous {
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            self.writer
+                .with(|w| {
+                    w.submit_blocking(CommitRequest::PutBlocks {
+                        blocks,
+                        response: tx,
+                    })
+                })
+                .map_err(commit_error_to_repo)?
+                .map_err(commit_error_to_repo)?;
+            return rx
+                .try_recv()
+                .map_err(|_| commit_error_to_repo(CommitError::ChannelClosed))?
+                .map_err(commit_error_to_repo);
+        }
         let sender = self
             .writer
             .with(|w| w.sender_for_blocks(&blocks).clone())
@@ -728,6 +758,23 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
         blocks: Vec<([u8; CID_SIZE], Vec<u8>)>,
         deleted_cids: Vec<[u8; CID_SIZE]>,
     ) -> Result<(), RepoError> {
+        if self.synchronous {
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            self.writer
+                .with(|w| {
+                    w.submit_blocking(CommitRequest::ApplyCommit {
+                        blocks,
+                        deleted_cids,
+                        response: tx,
+                    })
+                })
+                .map_err(commit_error_to_repo)?
+                .map_err(commit_error_to_repo)?;
+            return rx
+                .try_recv()
+                .map_err(|_| commit_error_to_repo(CommitError::ChannelClosed))?
+                .map_err(commit_error_to_repo);
+        }
         let sender = self
             .writer
             .with(|w| w.sender_for_apply(&blocks, &deleted_cids).clone())
@@ -750,6 +797,9 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> TranquilBlockStore<S, C> {
 impl<S: StorageIO + Send + Sync + 'static, C: Clock> BlockStore for TranquilBlockStore<S, C> {
     async fn get(&self, cid: &Cid) -> Result<Option<Bytes>, RepoError> {
         let cid_bytes = cid_to_bytes(cid)?;
+        if self.synchronous {
+            return self.reader.get(&cid_bytes).map_err(read_error_to_repo);
+        }
         let reader = Arc::clone(&self.reader);
         tokio::task::spawn_blocking(move || reader.get(&cid_bytes))
             .await
@@ -767,6 +817,9 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> BlockStore for TranquilBloc
 
     async fn has(&self, cid: &Cid) -> Result<bool, RepoError> {
         let cid_bytes = cid_to_bytes(cid)?;
+        if self.synchronous {
+            return self.reader.has(&cid_bytes).map_err(read_error_to_repo);
+        }
         let reader = Arc::clone(&self.reader);
         tokio::task::spawn_blocking(move || reader.has(&cid_bytes))
             .await
@@ -797,6 +850,9 @@ impl<S: StorageIO + Send + Sync + 'static, C: Clock> BlockStore for TranquilBloc
             .iter()
             .map(cid_to_bytes)
             .collect::<Result<Vec<_>, _>>()?;
+        if self.synchronous {
+            return self.reader.get_many(&cid_bytes).map_err(read_error_to_repo);
+        }
         let reader = Arc::clone(&self.reader);
         tokio::task::spawn_blocking(move || reader.get_many(&cid_bytes))
             .await
@@ -1066,6 +1122,36 @@ mod tests {
                 "block B lost across second reopen"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn synchronous_store_serves_async_block_store_trait() {
+        use jacquard_repo::storage::BlockStore;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut cfg = BlockStoreConfig::new(tmp.path().join("data"), tmp.path().join("index"));
+        cfg.group_commit.synchronous = true;
+        let store = TranquilBlockStore::open(cfg).unwrap();
+
+        let payload = b"sync-trait-roundtrip".to_vec();
+        let cid = crate::blockstore::hash_to_cid(&payload);
+
+        store
+            .put_many(vec![(cid, bytes::Bytes::from(payload.clone()))])
+            .await
+            .expect("async put_many must not panic on a synchronous store");
+
+        let got = store.get(&cid).await.expect("async get must succeed");
+        assert_eq!(
+            got.as_deref(),
+            Some(payload.as_slice()),
+            "synchronous store must round-trip blocks through the async trait"
+        );
+
+        store
+            .decrement_refs(&[cid])
+            .await
+            .expect("async decrement_refs must not panic on a synchronous store");
     }
 
     fn instant_policy(max_attempts: u8) -> OpenRetryPolicy {

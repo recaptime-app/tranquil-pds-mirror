@@ -100,7 +100,9 @@ where
 
         let nodes_repaired = batch_by_bytes(to_repair)
             .into_iter()
-            .try_fold(0u64, |acc, batch| store.repair_blocks(batch).map(|n| acc + n))
+            .try_fold(0u64, |acc, batch| {
+                store.repair_blocks(batch).map(|n| acc + n)
+            })
             .map_err(|e| rebuild_err("repair_blocks", e))?;
 
         Ok(RepairOutcome {
