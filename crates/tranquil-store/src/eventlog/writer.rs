@@ -8,10 +8,10 @@ use crate::io::{FileId, StorageIO};
 
 use super::manager::SegmentManager;
 use super::segment_file::{
-    SEGMENT_HEADER_SIZE, SEGMENT_MAGIC, SegmentWriter, ValidEvent, ValidateEventRecord,
-    validate_event_record,
+    ReadEventRecord, SEGMENT_HEADER_SIZE, SEGMENT_MAGIC, SegmentReader, SegmentWriter, ValidEvent,
+    ValidateEventRecord, validate_event_record,
 };
-use super::segment_index::{DEFAULT_INDEX_INTERVAL, SegmentIndex, rebuild_from_segment};
+use super::segment_index::{SegmentIndex, rebuild_from_segment};
 use super::sidecar::build_sidecar_from_segment;
 use super::types::{DidHash, EventSequence, EventTypeTag, SegmentId, SegmentOffset};
 
@@ -506,22 +506,29 @@ fn find_last_seq_from_segments<S: StorageIO>(
         if acc.is_some() {
             return Ok(acc);
         }
-
-        match SegmentIndex::load(manager.io(), &manager.index_path(seg_id)) {
-            Ok(Some(idx)) => Ok(idx.last_seq()),
-            Err(e) if e.kind() != io::ErrorKind::InvalidData => Err(e),
-            _ => {
-                let handle = manager.open_for_read(seg_id)?;
-                let (_, last_seq) = rebuild_from_segment(
-                    manager.io(),
-                    handle.fd(),
-                    DEFAULT_INDEX_INTERVAL,
-                    max_payload,
-                )?;
-                Ok(last_seq)
-            }
-        }
+        last_seq_in_segment_file(manager, seg_id, max_payload)
     })
+}
+
+fn last_seq_in_segment_file<S: StorageIO>(
+    manager: &SegmentManager<S>,
+    seg_id: SegmentId,
+    max_payload: u32,
+) -> io::Result<Option<EventSequence>> {
+    let handle = manager.open_for_read(seg_id)?;
+    SegmentReader::open(manager.io(), handle.fd(), max_payload)?
+        .map(|record| {
+            record.map(|record| match record {
+                ReadEventRecord::Valid { event, .. } => Some(event.seq),
+                ReadEventRecord::Corrupted { .. } | ReadEventRecord::Truncated { .. } => None,
+            })
+        })
+        .scan((), |(), result| match result {
+            Err(e) => Some(Err(e)),
+            Ok(Some(seq)) => Some(Ok(seq)),
+            Ok(None) => None,
+        })
+        .try_fold(None, |_, result| result.map(Some))
 }
 
 #[cfg(test)]
@@ -610,6 +617,49 @@ mod tests {
             });
 
         assert_eq!(writer.synced_seq(), EventSequence::new(3));
+    }
+
+    #[test]
+    fn recovery_uses_segment_file_tail_not_stale_sidecar_index() {
+        let mgr = setup_manager(64 * 1024);
+        let mut writer =
+            EventLogWriter::open(Arc::clone(&mgr), DEFAULT_INDEX_INTERVAL, MAX_EVENT_PAYLOAD)
+                .unwrap();
+
+        ["squid", "anemone", "barnacle", "clam", "conch"]
+            .iter()
+            .for_each(|name| {
+                append_test_event(&mut writer, &format!("did:plc:{name}"));
+            });
+        let synced = writer.sync().unwrap();
+        assert_eq!(synced.synced_through, EventSequence::new(5));
+
+        let index_path = mgr.index_path(SegmentId::new(1));
+        let mut stale = SegmentIndex::new();
+        stale.record(
+            EventSequence::new(1),
+            SegmentOffset::new(SEGMENT_HEADER_SIZE as u64),
+        );
+        stale.record(
+            EventSequence::new(3),
+            SegmentOffset::new(SEGMENT_HEADER_SIZE as u64 + 100),
+        );
+        stale.save(mgr.io(), &index_path).unwrap();
+        assert_eq!(
+            SegmentIndex::load(mgr.io(), &index_path)
+                .unwrap()
+                .unwrap()
+                .last_seq(),
+            Some(EventSequence::new(3)),
+        );
+
+        let last =
+            find_last_seq_from_segments(&mgr, &[SegmentId::new(1)], MAX_EVENT_PAYLOAD).unwrap();
+        assert_eq!(
+            last,
+            Some(EventSequence::new(5)),
+            "recovery must read the durable segment file tail, not a lagging sidecar index"
+        );
     }
 
     #[test]
