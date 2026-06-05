@@ -188,12 +188,22 @@ async fn test_plc_token_lifecycle() {
         "PLC token should be created in database"
     );
     let first = &tokens[0];
+    // The token is persisted in canonical (normalized) form: uppercase base32,
+    // 10 chars, no hyphen. The hyphenated display form only appears in the email.
     assert_eq!(
         first.token.len(),
-        11,
-        "Token should be in format xxxxx-xxxxx"
+        10,
+        "Stored token should be the 10-char canonical form"
     );
-    assert!(first.token.contains('-'), "Token should contain hyphen");
+    assert!(
+        !first.token.contains('-'),
+        "Stored token should not contain a hyphen"
+    );
+    assert_eq!(
+        first.token,
+        first.token.to_uppercase(),
+        "Stored token should be uppercase"
+    );
     assert!(
         first.expires_at > chrono::Utc::now(),
         "Token should not be expired"

@@ -45,9 +45,12 @@ async fn test_request_password_reset_creates_code() {
         .expect("user not found");
     assert!(info.code.is_some());
     assert!(info.expires_at.is_some());
+    // The stored code is normalized: uppercase base32, 10 chars, no hyphen.
+    // The hyphenated display form only appears in the email.
     let code = info.code.unwrap();
-    assert!(code.contains('-'));
-    assert_eq!(code.len(), 11);
+    assert!(!code.contains('-'));
+    assert_eq!(code.len(), 10);
+    assert_eq!(code, code.to_uppercase());
 }
 
 #[tokio::test]
@@ -109,7 +112,10 @@ async fn test_reset_password_with_valid_token() {
         .await
         .expect("failed to look up user")
         .expect("user not found");
-    let token = info.code.expect("No reset code");
+    let stored = info.code.expect("No reset code");
+    // Submit a variant a user might actually type: lowercased, with the display
+    // hyphen re-inserted. Normalization must still accept it.
+    let token = format!("{}-{}", &stored[0..5], &stored[5..10]).to_lowercase();
     let res = client
         .post(format!(
             "{}/xrpc/com.atproto.server.resetPassword",

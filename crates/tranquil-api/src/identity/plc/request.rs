@@ -6,10 +6,6 @@ use tranquil_pds::api::error::{ApiError, DbResultExt};
 use tranquil_pds::auth::{Auth, Permissive};
 use tranquil_pds::state::AppState;
 
-fn generate_plc_token() -> String {
-    tranquil_pds::util::generate_token_code()
-}
-
 pub async fn request_plc_operation_signature(
     State(state): State<AppState>,
     auth: Auth<Permissive>,
@@ -28,12 +24,13 @@ pub async fn request_plc_operation_signature(
         .ok_or(ApiError::AccountNotFound)?;
 
     let _ = state.repos.infra.delete_plc_tokens_for_user(user_id).await;
-    let plc_token = generate_plc_token();
+    let display_token = tranquil_pds::util::generate_token_code();
+    let stored_token = tranquil_pds::util::normalize_token_code(&display_token);
     let expires_at = Utc::now() + Duration::minutes(10);
     state
         .repos
         .infra
-        .insert_plc_token(user_id, &plc_token, expires_at)
+        .insert_plc_token(user_id, &stored_token, expires_at)
         .await
         .log_db_err("creating PLC token")?;
 
@@ -42,7 +39,7 @@ pub async fn request_plc_operation_signature(
         state.repos.user.as_ref(),
         state.repos.infra.as_ref(),
         user_id,
-        &plc_token,
+        &display_token,
         hostname,
     )
     .await

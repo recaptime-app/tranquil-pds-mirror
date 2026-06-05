@@ -43,9 +43,10 @@ pub async fn sign_plc_operation(
             "PLC operations are only valid for did:plc identities".into(),
         ));
     }
-    let token = input.token.as_ref().ok_or_else(|| {
+    let raw_token = input.token.as_ref().ok_or_else(|| {
         ApiError::InvalidRequest("Email confirmation token required to sign PLC operations".into())
     })?;
+    let token = &tranquil_pds::util::normalize_token_code(raw_token);
 
     let user_id = state
         .repos

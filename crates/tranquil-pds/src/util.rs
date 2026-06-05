@@ -33,7 +33,20 @@ pub fn generate_token_code() -> String {
             .map(|_| chars[rng.gen_range(0..chars.len())])
             .collect()
     };
-    format!("{}-{}", gen_segment(&mut rng), gen_segment(&mut rng))
+    // Human-entered short codes are displayed in uppercase; base32 digits are
+    // unaffected by the conversion.
+    format!("{}-{}", gen_segment(&mut rng), gen_segment(&mut rng)).to_uppercase()
+}
+
+/// Normalize a user-entered short code so that codes are accepted
+/// case-insensitively and regardless of the separating hyphen or surrounding
+/// whitespace.
+pub fn normalize_token_code(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect::<String>()
+        .to_uppercase()
 }
 
 pub fn parse_repeated_query_param(query: Option<&str>, key: &str) -> Vec<String> {
@@ -491,8 +504,42 @@ mod tests {
         assert!(
             code.chars()
                 .filter(|&c| c != '-')
-                .all(|c| BASE32_ALPHABET.contains(c))
+                .all(|c| BASE32_ALPHABET.to_uppercase().contains(c))
         );
+    }
+
+    #[test]
+    fn test_generate_token_code_is_uppercase() {
+        (0..100).for_each(|_| {
+            let code = generate_token_code();
+            assert_eq!(code, code.to_uppercase(), "code must be uppercase: {code}");
+        });
+    }
+
+    #[test]
+    fn test_normalize_token_code_strips_hyphen_and_uppercases() {
+        assert_eq!(normalize_token_code("k7m2p-q9rst"), "K7M2PQ9RST");
+        assert_eq!(normalize_token_code("K7M2P-Q9RST"), "K7M2PQ9RST");
+    }
+
+    #[test]
+    fn test_normalize_token_code_strips_whitespace() {
+        assert_eq!(normalize_token_code("  k7m2p-q9rst \n"), "K7M2PQ9RST");
+    }
+
+    #[test]
+    fn test_normalize_token_code_is_idempotent() {
+        let once = normalize_token_code("k7m2p-q9rst");
+        assert_eq!(normalize_token_code(&once), once);
+    }
+
+    #[test]
+    fn test_generated_code_round_trips_through_normalize() {
+        let code = generate_token_code();
+        // A user re-typing the displayed code lowercased and without the hyphen
+        // must normalize to the same canonical form as the code itself.
+        let retyped = code.to_lowercase().replace('-', "");
+        assert_eq!(normalize_token_code(&code), normalize_token_code(&retyped));
     }
 
     #[test]

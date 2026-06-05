@@ -13,10 +13,6 @@ use tranquil_pds::state::AppState;
 use tranquil_pds::types::PlainPassword;
 use tranquil_pds::validation::validate_password;
 
-fn generate_reset_code() -> String {
-    tranquil_pds::util::generate_token_code()
-}
-
 #[derive(Deserialize)]
 pub struct RequestPasswordResetInput {
     #[serde(alias = "identifier")]
@@ -70,12 +66,13 @@ pub async fn request_password_reset(
             return Err(ApiError::InternalError(None));
         }
     };
-    let code = generate_reset_code();
+    let display_code = tranquil_pds::util::generate_token_code();
+    let stored_code = tranquil_pds::util::normalize_token_code(&display_code);
     let expires_at = Utc::now() + Duration::minutes(10);
     if let Err(e) = state
         .repos
         .user
-        .set_password_reset_code(user_id, &code, expires_at)
+        .set_password_reset_code(user_id, &stored_code, expires_at)
         .await
     {
         error!("DB error setting reset code: {:?}", e);
@@ -86,7 +83,7 @@ pub async fn request_password_reset(
         state.repos.user.as_ref(),
         state.repos.infra.as_ref(),
         user_id,
-        &code,
+        &display_code,
         hostname,
     )
     .await
@@ -133,7 +130,13 @@ pub async fn reset_password(
     if let Err(e) = validate_password(password) {
         return Err(ApiError::InvalidRequest(e.to_string()));
     }
-    let user = match state.repos.user.get_user_by_reset_code(token).await {
+    let normalized_token = tranquil_pds::util::normalize_token_code(token);
+    let user = match state
+        .repos
+        .user
+        .get_user_by_reset_code(&normalized_token)
+        .await
+    {
         Ok(Some(u)) => u,
         Ok(None) => {
             return Err(ApiError::InvalidToken(None));

@@ -1,11 +1,10 @@
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::cache::Cache;
+use crate::util::{generate_token_code, normalize_token_code};
 
 const TOKEN_TTL_SECS: u64 = 900;
-const BASE32_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmailTokenPurpose {
@@ -46,14 +45,6 @@ fn cache_key(did: &str, purpose: EmailTokenPurpose) -> String {
     format!("email_token:{}:{}", purpose.as_str(), did)
 }
 
-fn generate_short_token() -> String {
-    let mut rng = rand::thread_rng();
-    let token: String = (0..10)
-        .map(|_| BASE32_CHARS[rng.gen_range(0..BASE32_CHARS.len())] as char)
-        .collect();
-    format!("{}-{}", &token[0..5], &token[5..10])
-}
-
 fn current_timestamp() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
 }
@@ -67,9 +58,9 @@ pub async fn create_email_token(
         return Err(TokenError::CacheUnavailable);
     }
 
-    let token = generate_short_token();
+    let token = generate_token_code();
     let data = TokenData {
-        token: token.clone(),
+        token: normalize_token_code(&token),
         created_at: current_timestamp(),
     };
 
@@ -108,10 +99,9 @@ pub async fn validate_email_token(
         return Err(TokenError::ExpiredToken);
     }
 
-    let normalized_input = token.to_uppercase().replace('-', "");
-    let normalized_stored = data.token.to_uppercase().replace('-', "");
+    let normalized_input = normalize_token_code(token);
 
-    if !constant_time_eq(normalized_input.as_bytes(), normalized_stored.as_bytes()) {
+    if !constant_time_eq(normalized_input.as_bytes(), data.token.as_bytes()) {
         return Err(TokenError::InvalidToken);
     }
 
@@ -260,20 +250,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_format() {
-        (0..100).for_each(|_| {
-            let token = generate_short_token();
+        // The emitted token is the display form: uppercase `XXXXX-XXXXX`.
+        let cache = MockCache::new();
+        let did = "did:plc:test123";
+        (0..50).for_each(|_| {
+            let token = futures::executor::block_on(create_email_token(
+                &cache,
+                did,
+                EmailTokenPurpose::UpdateEmail,
+            ))
+            .unwrap();
             assert_eq!(token.len(), 11);
             assert_eq!(&token[5..6], "-");
-            assert!(
-                token[0..5]
-                    .chars()
-                    .all(|c| BASE32_CHARS.contains(&(c as u8)))
-            );
-            assert!(
-                token[6..11]
-                    .chars()
-                    .all(|c| BASE32_CHARS.contains(&(c as u8)))
-            );
+            assert_eq!(token, token.to_uppercase());
         });
     }
 
@@ -289,6 +278,21 @@ mod tests {
         let lowercase = token.to_lowercase();
         let result =
             validate_email_token(&cache, did, EmailTokenPurpose::UpdateEmail, &lowercase).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_hyphen_insensitive_validation() {
+        let cache = MockCache::new();
+        let did = "did:plc:test123";
+
+        let token = create_email_token(&cache, did, EmailTokenPurpose::UpdateEmail)
+            .await
+            .unwrap();
+
+        let no_hyphen = token.replace('-', "");
+        let result =
+            validate_email_token(&cache, did, EmailTokenPurpose::UpdateEmail, &no_hyphen).await;
         assert!(result.is_ok());
     }
 

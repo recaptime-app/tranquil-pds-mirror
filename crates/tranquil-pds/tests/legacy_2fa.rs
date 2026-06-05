@@ -40,19 +40,17 @@ async fn get_2fa_code_from_queue(did: &str) -> Option<String> {
         .await
         .ok()?;
 
+    const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     comms.first().and_then(|c| {
-        c.body
-            .lines()
-            .find(|line: &&str| line.chars().all(|c: char| c.is_ascii_digit()) && line.len() == 8)
-            .map(|s: &str| s.to_string())
-            .or_else(|| {
-                c.body
-                    .split_whitespace()
-                    .find(|word: &&str| {
-                        word.chars().all(|c: char| c.is_ascii_digit()) && word.len() == 8
-                    })
-                    .map(|s: &str| s.to_string())
-            })
+        c.body.split_whitespace().find_map(|word: &str| {
+            let candidate = word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-');
+            let normalized = candidate.replace('-', "");
+            if normalized.len() == 10 && normalized.chars().all(|ch| ALPHABET.contains(ch)) {
+                Some(candidate.to_string())
+            } else {
+                None
+            }
+        })
     })
 }
 

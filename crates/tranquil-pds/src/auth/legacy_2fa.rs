@@ -1,15 +1,14 @@
 use chrono::Utc;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::cache::Cache;
 use crate::types::Did;
+use crate::util::{generate_token_code, normalize_token_code};
 
 const CHALLENGE_TTL_SECS: u64 = 300;
 const MIN_REMAINING_TTL_SECS: u64 = 10;
 const MAX_ATTEMPTS: u8 = 5;
-const CODE_LENGTH: usize = 8;
 const COOLDOWN_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,7 +93,8 @@ async fn validate_challenge_internal(
         return Err(ValidationError::ChallengeExpired);
     }
 
-    if !constant_time_eq(code.as_bytes(), data.code.as_bytes()) {
+    let normalized_input = normalize_token_code(code);
+    if !constant_time_eq(normalized_input.as_bytes(), data.code.as_bytes()) {
         let updated = ChallengeData {
             code: data.code,
             attempts: data.attempts + 1,
@@ -125,13 +125,6 @@ fn challenge_key(did: &str) -> String {
 
 fn cooldown_key(did: &str) -> String {
     format!("legacy_2fa_cooldown:{}", did)
-}
-
-fn generate_code() -> String {
-    let mut rng = rand::thread_rng();
-    (0..CODE_LENGTH)
-        .map(|_| rng.gen_range(0..10).to_string())
-        .collect()
 }
 
 fn current_timestamp() -> u64 {
@@ -219,11 +212,11 @@ async fn create_challenge_code(
         return Err(ChallengeError::RateLimited);
     }
 
-    let code = generate_code();
+    let display = generate_token_code();
     let now = current_timestamp();
 
     let data = ChallengeData {
-        code: code.clone(),
+        code: normalize_token_code(&display),
         attempts: 0,
         created_at: now,
     };
@@ -244,7 +237,7 @@ async fn create_challenge_code(
         .await
         .map_err(|_| ChallengeError::CacheError)?;
 
-    Ok(ChallengeCode(code))
+    Ok(ChallengeCode(display))
 }
 
 #[derive(Debug)]
@@ -332,9 +325,43 @@ mod tests {
         let did = Did::new("did:plc:test123".to_string()).unwrap();
 
         let code = create_challenge(&cache, &did).await.unwrap();
-        assert_eq!(code.as_str().len(), CODE_LENGTH);
+        assert_eq!(code.as_str().len(), 11);
 
         let result = validate_challenge(&cache, &did, code.as_str()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_challenge_code_format() {
+        let cache = MockCache::new();
+        let did = Did::new("did:plc:test123".to_string()).unwrap();
+
+        let code = create_challenge(&cache, &did).await.unwrap();
+        let code = code.as_str();
+        assert_eq!(code.len(), 11);
+        assert_eq!(&code[5..6], "-");
+        assert_eq!(code, code.to_uppercase());
+    }
+
+    #[tokio::test]
+    async fn test_case_insensitive_validation() {
+        let cache = MockCache::new();
+        let did = Did::new("did:plc:test123".to_string()).unwrap();
+
+        let code = create_challenge(&cache, &did).await.unwrap();
+        let lowercase = code.as_str().to_lowercase();
+        let result = validate_challenge(&cache, &did, &lowercase).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_hyphen_insensitive_validation() {
+        let cache = MockCache::new();
+        let did = Did::new("did:plc:test123".to_string()).unwrap();
+
+        let code = create_challenge(&cache, &did).await.unwrap();
+        let no_hyphen = code.as_str().replace('-', "");
+        let result = validate_challenge(&cache, &did, &no_hyphen).await;
         assert!(result.is_ok());
     }
 
@@ -394,15 +421,6 @@ mod tests {
 
         let result = create_challenge(&cache, &did).await;
         assert_eq!(result.unwrap_err(), ChallengeError::CacheUnavailable);
-    }
-
-    #[tokio::test]
-    async fn test_code_generation_is_numeric() {
-        (0..100).for_each(|_| {
-            let code = generate_code();
-            assert!(code.chars().all(|c| c.is_ascii_digit()));
-            assert_eq!(code.len(), CODE_LENGTH);
-        });
     }
 
     #[tokio::test]
