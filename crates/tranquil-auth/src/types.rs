@@ -16,6 +16,7 @@ impl TokenType {
             Self::Access => "at+jwt",
             Self::Refresh => "refresh+jwt",
             // RFC 7519 §5.1 recommends the uppercase "JWT".
+            // and for atproto inter-service auth its a requirement.
             Self::Service => "JWT",
         }
     }
