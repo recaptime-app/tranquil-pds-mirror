@@ -27,7 +27,7 @@ pub use hint::{
 };
 pub use manager::{CachedHandle, DEFAULT_MAX_FILE_SIZE, DataFileManager};
 pub use reader::{BLOCK_CORRUPTION_MARKER, BlockStoreReader, ReadError};
-pub use repair::{RepairOutcome, rebuild_and_repair_mst};
+pub use repair::{RepairOutcome, rebuild_and_repair_mst, rebuild_mst_nodes};
 pub use store::QuiesceGuard;
 pub use store::{BlockStoreConfig, DEFAULT_SHARD_COUNT, OpenRetryPolicy, TranquilBlockStore};
 pub use types::{

@@ -44,10 +44,26 @@ impl AnyBlockStore {
         expected_root: Cid,
     ) -> Result<RepairOutcome, RepoError> {
         match self {
-            Self::Postgres(_) => Ok(RepairOutcome {
-                nodes_total: 0,
-                nodes_repaired: 0,
-            }),
+            Self::Postgres(s) => {
+                let nodes =
+                    tranquil_store::blockstore::rebuild_mst_nodes(entries, expected_root).await?;
+                let nodes_total = nodes.len();
+                let cids: Vec<Cid> = nodes.iter().map(|(cid, _)| *cid).collect();
+                let present = s.get_many(&cids).await?;
+                let missing: Vec<(Cid, Bytes)> = nodes
+                    .into_iter()
+                    .zip(present)
+                    .filter_map(|((cid, bytes), found)| found.is_none().then_some((cid, bytes)))
+                    .collect();
+                let nodes_repaired = missing.len() as u64;
+                if !missing.is_empty() {
+                    s.put_many(missing).await?;
+                }
+                Ok(RepairOutcome {
+                    nodes_total,
+                    nodes_repaired,
+                })
+            }
             Self::TranquilStore(s) => {
                 tranquil_store::blockstore::rebuild_and_repair_mst(s, entries, expected_root).await
             }

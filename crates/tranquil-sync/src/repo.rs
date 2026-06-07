@@ -163,7 +163,7 @@ pub async fn get_repo(
     {
         Ok(bytes) => bytes,
         Err(e) => {
-            if ApiError::detail_is_repo_corruption(&format!("{e:#}")) {
+            if e.is_repairable() {
                 tranquil_pds::repo_ops::schedule_repo_repair(&state, account.user_id);
             }
             error!("Failed to generate repo CAR: {}", e);

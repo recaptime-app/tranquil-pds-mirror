@@ -3,9 +3,8 @@ use std::sync::Arc;
 use cid::Cid;
 use jacquard_repo::mst::Mst;
 use jacquard_repo::storage::BlockStore;
-use tranquil_pds::api::error::ApiError;
 use tranquil_pds::repo::AnyBlockStore;
-use tranquil_pds::scheduled::generate_repo_car;
+use tranquil_pds::scheduled::{RepoCarError, generate_repo_car};
 use tranquil_store::blockstore::{BlockStoreConfig, GroupCommitConfig, TranquilBlockStore};
 
 const RECORD_COUNT: usize = 200;
@@ -68,9 +67,28 @@ async fn car_export_error_is_classified_as_repo_corruption() {
     let err = generate_repo_car(&any, &root)
         .await
         .expect_err("corrupt CAR export must error");
-    let chain = format!("{err:#}");
     assert!(
-        ApiError::detail_is_repo_corruption(&chain),
-        "CAR export error must carry the corruption marker so the sync path can schedule self-heal; got: {chain}"
+        err.is_repairable(),
+        "{err} should classify as repairable so the sync path can self-heal"
     );
+}
+
+#[tokio::test]
+async fn car_export_missing_block_is_repairable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = open_store(dir.path());
+    let root = build_tree(&source).await;
+
+    let pristine = open_store(&dir.path().join("pristine"));
+    let head_block = source.get(&root).await.expect("read root").expect("root present");
+    pristine.put(&head_block).await.expect("seed root only");
+
+    let err = generate_repo_car(&pristine, &root)
+        .await
+        .expect_err("CAR export over a store missing MST children must error");
+    assert!(
+        matches!(err, RepoCarError::MissingBlocks(ref cids) if !cids.is_empty()),
+        "{err} should surface as MissingBlocks when referenced blocks are absent"
+    );
+    assert!(err.is_repairable());
 }

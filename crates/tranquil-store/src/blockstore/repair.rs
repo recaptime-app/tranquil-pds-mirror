@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
 use cid::Cid;
 use jacquard_repo::error::RepoError;
 use jacquard_repo::mst::Mst;
@@ -23,13 +24,13 @@ fn rebuild_err(context: &str, e: impl std::fmt::Display) -> RepoError {
     RepoError::storage(std::io::Error::other(format!("{context}: {e}")))
 }
 
-async fn rebuild_node_blocks(
-    entries: Vec<(String, Cid)>,
+pub async fn rebuild_mst_nodes(
+    entries: &[(String, Cid)],
     expected_root: Cid,
-) -> Result<Vec<(CidBytes, Vec<u8>)>, RepoError> {
+) -> Result<Vec<(Cid, Bytes)>, RepoError> {
     let scratch = Arc::new(MemoryBlockStore::new());
     let mut mst = Mst::new(scratch);
-    for (key, cid) in &entries {
+    for (key, cid) in entries {
         mst.add_mut(key.as_str(), *cid)
             .await
             .map_err(|e| rebuild_err("mst rebuild add", e))?;
@@ -49,7 +50,15 @@ async fn rebuild_node_blocks(
         )));
     }
 
-    blocks
+    Ok(blocks.into_iter().collect())
+}
+
+async fn rebuild_node_blocks(
+    entries: Vec<(String, Cid)>,
+    expected_root: Cid,
+) -> Result<Vec<(CidBytes, Vec<u8>)>, RepoError> {
+    rebuild_mst_nodes(&entries, expected_root)
+        .await?
         .into_iter()
         .map(|(cid, bytes)| Ok((cid_to_bytes(&cid)?, bytes.to_vec())))
         .collect()

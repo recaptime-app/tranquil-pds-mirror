@@ -30,6 +30,7 @@ static TEST_TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CLUSTER: OnceLock<Vec<ServerInstance>> = OnceLock::new();
 static TEST_REPOS: OnceLock<Arc<tranquil_db::PostgresRepositories>> = OnceLock::new();
 static TEST_BLOCK_STORE: OnceLock<tranquil_pds::repo::AnyBlockStore> = OnceLock::new();
+static TEST_APP_STATE: OnceLock<AppState> = OnceLock::new();
 
 #[allow(dead_code)]
 pub fn is_store_backend() -> bool {
@@ -586,6 +587,7 @@ async fn spawn_server(config: ServerConfig) -> ServerInstance {
     if let Some((cache, distributed_rate_limiter)) = config.cache {
         state = state.with_cache(cache, distributed_rate_limiter);
     }
+    TEST_APP_STATE.set(state.clone()).ok();
     tranquil_sync::listener::start_sequencer_listener(state.clone()).await;
     let app = tranquil_pds::app_with_routes(
         state,
@@ -926,6 +928,12 @@ pub async fn get_test_block_store() -> &'static tranquil_pds::repo::AnyBlockStor
     TEST_BLOCK_STORE
         .get()
         .expect("TEST_BLOCK_STORE not initialized")
+}
+
+#[allow(dead_code)]
+pub async fn get_test_app_state() -> &'static AppState {
+    base_url().await;
+    TEST_APP_STATE.get().expect("TEST_APP_STATE not initialized")
 }
 
 #[allow(dead_code)]

@@ -259,12 +259,12 @@ pub async fn repair_repo_structure(
             ApiError::InternalError(None)
         })?
         .ok_or_else(|| ApiError::InternalError(Some("Commit block not found".into())))?;
-    let data_root = Commit::from_cbor(&commit_bytes)
-        .map_err(|e| {
-            error!("repair: failed to parse commit: {}", e);
-            ApiError::InternalError(None)
-        })?
-        .data;
+    let commit = Commit::from_cbor(&commit_bytes).map_err(|e| {
+        error!("repair: failed to parse commit: {}", e);
+        ApiError::InternalError(None)
+    })?;
+    let data_root = commit.data;
+    let repo_rev = commit.rev().to_string();
 
     let records = state
         .repos
@@ -290,14 +290,71 @@ pub async fn repair_repo_structure(
         "repair: rebuilding full MST from record set"
     );
 
-    state
+    let outcome = state
         .block_store
         .repair_structure(&entries, data_root)
         .await
         .map_err(|e| {
             error!("repair: structural repair failed: {}", e);
             ApiError::InternalError(Some("Structural repair failed".into()))
-        })
+        })?;
+
+    if outcome.nodes_repaired > 0 {
+        let block_cids =
+            crate::scheduled::collect_current_repo_blocks(&state.block_store, &current_root_cid)
+                .await
+                .map_err(|e| {
+                    error!("repair: re-walk for user_blocks backfill failed: {}", e);
+                    ApiError::InternalError(None)
+                })?;
+
+        let cids = block_cids
+            .iter()
+            .map(|bytes| Cid::try_from(bytes.as_slice()))
+            .collect::<Result<Vec<Cid>, _>>()
+            .map_err(|e| {
+                error!("repair: unparseable CID in repaired DAG walk: {e}");
+                ApiError::InternalError(None)
+            })?;
+        let present = state.block_store.get_many(&cids).await.map_err(|e| {
+            error!("repair: presence check during user_blocks backfill failed: {e}");
+            ApiError::InternalError(None)
+        })?;
+        let missing: Vec<Cid> = cids
+            .iter()
+            .zip(present)
+            .filter_map(|(cid, found)| found.is_none().then_some(*cid))
+            .collect();
+        if !missing.is_empty() {
+            error!(
+                user_id = %user_id,
+                missing = missing.len(),
+                sample = ?missing.iter().take(5).map(|c| c.to_string()).collect::<Vec<_>>(),
+                "repair: unrecoverable leaf data loss after structural repair"
+            );
+            return Err(ApiError::InternalError(Some(format!(
+                "unrecoverable leaf data loss: {} record block(s) missing after structural repair",
+                missing.len()
+            ))));
+        }
+
+        state
+            .repos
+            .repo
+            .insert_user_blocks(user_id, &block_cids, &repo_rev)
+            .await
+            .map_err(|e| {
+                error!("repair: user_blocks backfill failed: {}", e);
+                ApiError::InternalError(None)
+            })?;
+        warn!(
+            user_id = %user_id,
+            blocks = block_cids.len(),
+            "repair: backfilled user_blocks from repaired DAG"
+        );
+    }
+
+    Ok(outcome)
 }
 
 pub async fn with_repair_retry<T, F, Fut>(

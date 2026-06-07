@@ -730,10 +730,53 @@ async fn delete_account_data(
 
 const CAR_BLOCK_BATCH_SIZE: usize = 500;
 
+#[derive(Debug)]
+pub enum RepoCarError {
+    MissingBlocks(Vec<Cid>),
+    Source(anyhow::Error),
+}
+
+impl RepoCarError {
+    pub fn is_repairable(&self) -> bool {
+        match self {
+            Self::MissingBlocks(_) => true,
+            Self::Source(e) => {
+                crate::api::error::ApiError::detail_is_repo_corruption(&format!("{e:#}"))
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for RepoCarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingBlocks(cids) => write!(
+                f,
+                "repo CAR is incomplete: {} block(s) referenced by the MST are missing from storage. First 5: {}",
+                cids.len(),
+                cids.iter()
+                    .take(5)
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Source(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+impl std::error::Error for RepoCarError {}
+
+impl From<anyhow::Error> for RepoCarError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Source(e)
+    }
+}
+
 pub async fn generate_repo_car(
     block_store: &AnyBlockStore,
     head_cid: &Cid,
-) -> anyhow::Result<Vec<u8>> {
+) -> Result<Vec<u8>, RepoCarError> {
     let block_cids_bytes = collect_current_repo_blocks(block_store, head_cid).await?;
     let block_cids: Vec<Cid> = block_cids_bytes
         .iter()
@@ -760,16 +803,7 @@ pub async fn generate_repo_car(
             .filter_map(|(cid, block_opt)| block_opt.is_none().then_some(*cid))
             .collect();
         if !missing.is_empty() {
-            anyhow::bail!(
-                "repo CAR is incomplete: {} block(s) referenced by the MST are missing from storage. First 5: {}",
-                missing.len(),
-                missing
-                    .iter()
-                    .take(5)
-                    .map(|c| c.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+            return Err(RepoCarError::MissingBlocks(missing));
         }
 
         chunk
@@ -803,7 +837,7 @@ pub async fn generate_repo_car_from_user_blocks(
     block_store: &AnyBlockStore,
     user_id: uuid::Uuid,
     _head_cid: &Cid,
-) -> anyhow::Result<Vec<u8>> {
+) -> Result<Vec<u8>, RepoCarError> {
     use std::str::FromStr;
 
     let repo_root_cid_str: String = repo_repo
