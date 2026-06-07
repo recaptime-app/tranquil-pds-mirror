@@ -16,10 +16,9 @@
         );
     in
     {
-      packages = forAllSystems (pkgs: {
-        tranquil-pds = pkgs.callPackage ./default.nix { };
-        tranquil-pds-aarch64 = pkgs.pkgsCross.aarch64-multiplatform.callPackage ./default.nix { };
-        tranquil-frontend = pkgs.callPackage ./frontend.nix { };
+      lib.mkPackages = import ./pkgs.nix;
+
+      packages = forAllSystems (pkgs: (self.lib.mkPackages pkgs) // {
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.tranquil-pds;
       });
 
