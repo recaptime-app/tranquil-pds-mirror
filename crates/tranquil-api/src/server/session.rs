@@ -197,7 +197,9 @@ pub async fn create_session(
         &row.did,
         &twofa_ctx,
         input.auth_factor_token.as_deref(),
-        async |t: &str| crate::server::totp::verify_totp_or_backup_for_user(&state, &row.did, t).await,
+        async |t: &str| {
+            crate::server::totp::verify_totp_or_backup_for_user(&state, &row.did, t).await
+        },
     )
     .await
     {

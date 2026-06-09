@@ -513,6 +513,11 @@ pub struct TlsConfig {
     /// Path to the TLS private key.
     #[config(env = "TLS_KEY_PATH")]
     pub key_path: Option<String>,
+
+    /// Serve HTTP/3 over QUIC on the same UDP port as the TCP listener.
+    /// Requires cert_path and key_path.
+    #[config(env = "TLS_HTTP3", default = false)]
+    pub http3: bool,
 }
 
 impl TlsConfig {
@@ -529,6 +534,13 @@ impl TlsConfig {
             errors.push(
                 "server.tls.cert_path (TLS_CERT_PATH) and server.tls.key_path (TLS_KEY_PATH) \
                  must both be set to enable app-level TLS, or both be unset"
+                    .to_string(),
+            );
+        }
+        if self.http3 && self.material().is_none() {
+            errors.push(
+                "server.tls.http3 (TLS_HTTP3) requires server.tls.cert_path \
+                 and erver.tls.key_path"
                     .to_string(),
             );
         }
@@ -1799,6 +1811,7 @@ port = 587
         TlsConfig {
             cert_path: None,
             key_path: None,
+            http3: false,
         }
         .validate(&mut errors);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
@@ -1810,6 +1823,7 @@ port = 587
         TlsConfig {
             cert_path: Some("/etc/tranquil/cert.pem".to_string()),
             key_path: Some("/etc/tranquil/key.pem".to_string()),
+            http3: false,
         }
         .validate(&mut errors);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
@@ -1821,11 +1835,27 @@ port = 587
         TlsConfig {
             cert_path: Some("/etc/tranquil/cert.pem".to_string()),
             key_path: None,
+            http3: false,
         }
         .validate(&mut errors);
         assert!(
             errors.iter().any(|e| e.contains("server.tls")),
             "expected server.tls error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn tls_validate_rejects_http3_without_material() {
+        let mut errors = Vec::new();
+        TlsConfig {
+            cert_path: None,
+            key_path: None,
+            http3: true,
+        }
+        .validate(&mut errors);
+        assert!(
+            errors.iter().any(|e| e.contains("http3")),
+            "expected http3 error, got {errors:?}"
         );
     }
 

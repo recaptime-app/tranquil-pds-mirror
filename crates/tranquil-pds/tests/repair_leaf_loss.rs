@@ -86,7 +86,11 @@ async fn repair_fails_loud_on_missing_leaf_block() {
     assert!(!records.is_empty(), "repo must contain records");
     let leaf_cid = Cid::from_str(records[0].record_cid.as_str()).expect("parse leaf cid");
     assert!(
-        block_store.get(&leaf_cid).await.expect("read leaf").is_some(),
+        block_store
+            .get(&leaf_cid)
+            .await
+            .expect("read leaf")
+            .is_some(),
         "leaf must be present before corruption"
     );
 
@@ -108,7 +112,11 @@ async fn repair_fails_loud_on_missing_leaf_block() {
         .expect("delete leaf record block");
 
     assert!(
-        block_store.get(&mst_root_cid).await.expect("read").is_none(),
+        block_store
+            .get(&mst_root_cid)
+            .await
+            .expect("read")
+            .is_none(),
         "mst root node must be gone to force a structural repair"
     );
     assert!(
@@ -126,7 +134,11 @@ async fn repair_fails_loud_on_missing_leaf_block() {
     );
 
     assert!(
-        block_store.get(&mst_root_cid).await.expect("read").is_some(),
+        block_store
+            .get(&mst_root_cid)
+            .await
+            .expect("read")
+            .is_some(),
         "structural repair must still re-insert the regenerable MST node"
     );
 

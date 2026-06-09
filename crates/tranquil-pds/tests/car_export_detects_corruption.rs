@@ -80,7 +80,11 @@ async fn car_export_missing_block_is_repairable() {
     let root = build_tree(&source).await;
 
     let pristine = open_store(&dir.path().join("pristine"));
-    let head_block = source.get(&root).await.expect("read root").expect("root present");
+    let head_block = source
+        .get(&root)
+        .await
+        .expect("read root")
+        .expect("root present");
     pristine.put(&head_block).await.expect("seed root only");
 
     let err = generate_repo_car(&pristine, &root)

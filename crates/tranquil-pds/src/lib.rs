@@ -51,6 +51,8 @@ pub const BUILD_VERSION: &str = concat!(
 #[cfg(not(debug_assertions))]
 pub const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub const GENERAL_BODY_LIMIT: usize = 16 * 1024 * 1024;
+
 pub struct ExternalRoutes {
     pub xrpc: Router<AppState>,
     pub oauth: Router<AppState>,
@@ -97,9 +99,7 @@ pub fn app_with_routes(state: AppState, external: ExternalRoutes) -> Router {
         .nest("/.well-known", well_known_router)
         .route("/metrics", get(metrics::metrics_handler))
         .merge(external.extra)
-        .layer(DefaultBodyLimit::max(
-            tranquil_config::get().server.max_blob_size as usize,
-        ))
+        .layer(DefaultBodyLimit::max(GENERAL_BODY_LIMIT))
         .layer(axum::middleware::map_response(rewrite_extractor_errors))
         .layer(middleware::from_fn(metrics::metrics_middleware))
         .layer(

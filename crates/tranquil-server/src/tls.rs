@@ -211,6 +211,9 @@ pub async fn serve_tls(
             async move {
                 match accepted {
                     Ok((tcp, peer)) => {
+                        if let Err(e) = tcp.set_nodelay(true) {
+                            debug!("failed to set nodelay for {peer}: {e}");
+                        }
                         let permit = tokio::select! {
                             biased;
                             _ = conn_shutdown.cancelled() => return,

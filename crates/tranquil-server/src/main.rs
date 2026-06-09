@@ -14,6 +14,7 @@ use tranquil_pds::scheduled::{
 };
 use tranquil_pds::state::AppState;
 
+mod http3;
 mod tls;
 
 #[derive(Parser)]
@@ -259,7 +260,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         shutdown.clone(),
     ));
 
-    let app = tranquil_pds::app_with_routes(
+    let app = http3::with_host_from_authority(tranquil_pds::app_with_routes(
         state,
         tranquil_pds::ExternalRoutes {
             xrpc: tranquil_api::api_routes().merge(tranquil_sync::sync_routes()),
@@ -270,7 +271,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .merge(tranquil_api::webhook_routes())
                 .merge(tranquil_oauth_server::frontend_client_metadata_route()),
         },
-    );
+    ));
 
     let cfg = tranquil_config::get();
     let host = &cfg.server.host;
@@ -286,6 +287,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| format!("Failed to bind to {}: {}", addr, e))?;
 
+    let mut http3_handle: Option<tokio::task::JoinHandle<()>> = None;
+
     let server_handle = match cfg.server.tls.material() {
         Some((cert_path, key_path)) => {
             let initial = tls::load_certified_key(cert_path, key_path)
@@ -296,14 +299,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map_err(|e| format!("Failed to build TLS configuration: {e}"))?,
             );
             tls::spawn_reload_handler(
-                resolver,
+                resolver.clone(),
                 cert_path.to_string(),
                 key_path.to_string(),
                 shutdown.clone(),
             );
+
+            let tcp_app = if cfg.server.tls.http3 {
+                let quic_config = http3::build_quic_server_config(resolver)
+                    .map_err(|e| format!("Failed to build HTTP/3 configuration: {e}"))?;
+                let endpoint = quinn::Endpoint::server(quic_config, addr)
+                    .map_err(|e| format!("Failed to bind HTTP/3 endpoint on {addr}: {e}"))?;
+                let h3_port = endpoint
+                    .local_addr()
+                    .map(|a| a.port())
+                    .map_err(|e| format!("Failed to read HTTP/3 local address: {e}"))?;
+                info!("HTTP/3 enabled on udp/{h3_port}");
+                http3_handle = Some(tokio::spawn(http3::serve_http3(
+                    endpoint,
+                    app.clone(),
+                    shutdown.clone(),
+                )));
+                http3::with_alt_svc(app, h3_port)
+            } else {
+                app
+            };
+
             info!("TLS termination enabled (h2, http/1.1), reload with SIGHUP");
             let shutdown = shutdown.clone();
-            tokio::spawn(tls::serve_tls(listener, app, server_config, shutdown))
+            tokio::spawn(tls::serve_tls(listener, tcp_app, server_config, shutdown))
         }
         None => {
             let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
@@ -331,6 +355,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let server_result = server_handle
         .await
         .map_err(|e| format!("Server task panicked: {}", e))?;
+
+    if let Some(handle) = http3_handle {
+        handle.await.ok();
+    }
 
     comms_handle.await.ok();
 

@@ -15,7 +15,11 @@ pub mod temp;
 use tranquil_pds::state::AppState;
 
 pub fn api_routes() -> axum::Router<AppState> {
+    use axum::extract::DefaultBodyLimit;
     use axum::routing::{get, post};
+
+    let blob_body_limit =
+        DefaultBodyLimit::max(tranquil_config::get().server.max_blob_size as usize);
 
     axum::Router::new()
         .route("/_health", get(server::health))
@@ -68,7 +72,10 @@ pub fn api_routes() -> axum::Router<AppState> {
         .route("/com.atproto.repo.deleteRecord", post(repo::delete_record))
         .route("/com.atproto.repo.listRecords", get(repo::list_records))
         .route("/com.atproto.repo.describeRepo", get(repo::describe_repo))
-        .route("/com.atproto.repo.uploadBlob", post(repo::upload_blob))
+        .route(
+            "/com.atproto.repo.uploadBlob",
+            post(repo::upload_blob).layer(blob_body_limit),
+        )
         .route("/com.atproto.repo.applyWrites", post(repo::apply_writes))
         .route(
             "/com.atproto.server.checkAccountStatus",
@@ -247,7 +254,10 @@ pub fn api_routes() -> axum::Router<AppState> {
             "/_identity.verifyHandleOwnership",
             post(identity::verify_handle_ownership),
         )
-        .route("/com.atproto.repo.importRepo", post(repo::import_repo))
+        .route(
+            "/com.atproto.repo.importRepo",
+            post(repo::import_repo).layer(blob_body_limit),
+        )
         .route(
             "/com.atproto.admin.deleteAccount",
             post(admin::delete_account),

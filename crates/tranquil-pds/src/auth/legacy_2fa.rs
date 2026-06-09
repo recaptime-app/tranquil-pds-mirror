@@ -133,8 +133,7 @@ fn current_timestamp() -> u64 {
 
 pub fn looks_like_totp_token(code: &str) -> bool {
     let c = code.trim();
-    (c.len() == 6 && c.bytes().all(|b| b.is_ascii_digit()))
-        || crate::auth::is_backup_code_format(c)
+    (c.len() == 6 && c.bytes().all(|b| b.is_ascii_digit())) || crate::auth::is_backup_code_format(c)
 }
 
 pub fn used_totp_factor(has_totp: bool, auth_factor_token: Option<&str>) -> bool {

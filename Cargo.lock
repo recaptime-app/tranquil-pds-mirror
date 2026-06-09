@@ -210,7 +210,7 @@ version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5493c3bedbacf7fd7382c6346bbd66687d12bbaad3a89a2d2c303ee6cf20b048"
 dependencies = [
- "asn1-rs-derive",
+ "asn1-rs-derive 0.5.1",
  "asn1-rs-impl",
  "displaydoc",
  "nom 7.1.3",
@@ -221,10 +221,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "asn1-rs"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f43a50ac4fdca5df8e885c21b835997f0a1cdee65494a6847694a98652d9d8"
+dependencies = [
+ "asn1-rs-derive 0.6.0",
+ "asn1-rs-impl",
+ "displaydoc",
+ "nom 7.1.3",
+ "num-traits",
+ "rusticata-macros",
+ "thiserror 2.0.18",
+ "time",
+]
+
+[[package]]
 name = "asn1-rs-derive"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "965c2d33e53cb6b267e148a4cb0760bc01f4904c1cd4bb4002a085bb016d1490"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+ "synstructure",
+]
+
+[[package]]
+name = "asn1-rs-derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3109e49b1e4909e9db6515a30c633684d68cdeaa252f215214cb4fa1a5bfee2c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1046,7 +1074,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.8.0",
 ]
 
 [[package]]
@@ -1054,6 +1082,15 @@ name = "bit-vec"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
+name = "bit-vec"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bitflags"
@@ -1970,7 +2007,21 @@ version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5cd0a5c643689626bec213c4d8bd4d96acc8ffdb4ad4bb6bc16abf27d5f4b553"
 dependencies = [
- "asn1-rs",
+ "asn1-rs 0.6.2",
+ "displaydoc",
+ "nom 7.1.3",
+ "num-bigint",
+ "num-traits",
+ "rusticata-macros",
+]
+
+[[package]]
+name = "der-parser"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07da5016415d5a3c4dd39b11ed26f915f52fc4e0dc197d87908bc916e51bc1a6"
+dependencies = [
+ "asn1-rs 0.7.2",
  "displaydoc",
  "nom 7.1.3",
  "num-bigint",
@@ -2832,6 +2883,34 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "h3"
+version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10872b55cfb02a821b69dc7cf8dc6a71d6af25eb9a79662bec4a9d016056b3be"
+dependencies = [
+ "bytes",
+ "fastrand",
+ "futures-util",
+ "http 1.4.0",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "h3-quinn"
+version = "0.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b2e732c8d91a74731663ac8479ab505042fbf547b9a207213ab7fbcbfc4f8b4"
+dependencies = [
+ "bytes",
+ "futures",
+ "h3",
+ "quinn",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4614,7 +4693,16 @@ version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8d8034d9489cdaf79228eb9f6a3b8d7bb32ba00d6645ebd48eef4077ceb5bd9"
 dependencies = [
- "asn1-rs",
+ "asn1-rs 0.6.2",
+]
+
+[[package]]
+name = "oid-registry"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
+dependencies = [
+ "asn1-rs 0.7.2",
 ]
 
 [[package]]
@@ -5184,7 +5272,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37566cb3fdacef14c0737f9546df7cfeadbfbc9fef10991038bf5015d0c80532"
 dependencies = [
  "bit-set",
- "bit-vec",
+ "bit-vec 0.8.0",
  "bitflags",
  "num-traits",
  "rand 0.9.2",
@@ -5427,6 +5515,7 @@ checksum = "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20"
 dependencies = [
  "bytes",
  "cfg_aliases",
+ "futures-io",
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
@@ -5628,6 +5717,20 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.14.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57f6d249aad744e274e682777a50283a225a32705394ee6d5fcc01efa25e4055"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "x509-parser 0.18.1",
+ "yasna",
 ]
 
 [[package]]
@@ -7527,7 +7630,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-api"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -7578,7 +7681,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-auth"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "anyhow",
  "base32",
@@ -7601,7 +7704,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-cache"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -7615,7 +7718,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-comms"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -7641,7 +7744,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-config"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "confique",
  "serde",
@@ -7649,7 +7752,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-crypto"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -7665,7 +7768,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-db"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7682,7 +7785,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-db-traits"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -7698,7 +7801,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-infra"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7709,7 +7812,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-lexicon"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "chrono",
  "futures",
@@ -7728,7 +7831,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-oauth"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -7751,7 +7854,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-oauth-server"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -7784,7 +7887,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-pds"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -7878,7 +7981,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-repo"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "bytes",
  "cid",
@@ -7890,7 +7993,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-ripple"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-trait",
  "backon",
@@ -7915,7 +8018,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-scopes"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "axum",
  "futures",
@@ -7931,17 +8034,23 @@ dependencies = [
 
 [[package]]
 name = "tranquil-server"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "arc-swap",
  "axum",
+ "bytes",
  "clap",
  "dotenvy",
  "ed25519-dalek",
  "futures-util",
+ "h3",
+ "h3-quinn",
  "hex",
+ "http 1.4.0",
  "hyper 1.8.1",
  "hyper-util",
+ "quinn",
+ "rcgen",
  "rustls 0.23.37",
  "rustls-pemfile",
  "thiserror 2.0.18",
@@ -7961,7 +8070,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-signal"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7984,7 +8093,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-storage"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -8001,7 +8110,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-store"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-trait",
  "bytes",
@@ -8050,7 +8159,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-sync"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -8072,7 +8181,7 @@ dependencies = [
 
 [[package]]
 name = "tranquil-types"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "chrono",
  "cid",
@@ -8585,7 +8694,7 @@ checksum = "15784340a24c170ce60567282fb956a0938742dbfbf9eff5df793a686a009b8b"
 dependencies = [
  "base64 0.21.7",
  "base64urlsafedata",
- "der-parser",
+ "der-parser 9.0.0",
  "hex",
  "nom 7.1.3",
  "openssl",
@@ -8601,7 +8710,7 @@ dependencies = [
  "uuid",
  "webauthn-attestation-ca",
  "webauthn-rs-proto",
- "x509-parser",
+ "x509-parser 0.16.0",
 ]
 
 [[package]]
@@ -9155,14 +9264,32 @@ version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fcbc162f30700d6f3f82a24bf7cc62ffe7caea42c0b2cba8bf7f3ae50cf51f69"
 dependencies = [
- "asn1-rs",
+ "asn1-rs 0.6.2",
  "data-encoding",
- "der-parser",
+ "der-parser 9.0.0",
  "lazy_static",
  "nom 7.1.3",
- "oid-registry",
+ "oid-registry 0.7.1",
  "rusticata-macros",
  "thiserror 1.0.69",
+ "time",
+]
+
+[[package]]
+name = "x509-parser"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
+dependencies = [
+ "asn1-rs 0.7.2",
+ "data-encoding",
+ "der-parser 10.0.0",
+ "lazy_static",
+ "nom 7.1.3",
+ "oid-registry 0.8.1",
+ "ring",
+ "rusticata-macros",
+ "thiserror 2.0.18",
  "time",
 ]
 
@@ -9193,6 +9320,16 @@ name = "yansi"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
+
+[[package]]
+name = "yasna"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
+dependencies = [
+ "bit-vec 0.9.1",
+ "time",
+]
 
 [[package]]
 name = "yoke"

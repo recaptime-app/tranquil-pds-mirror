@@ -26,7 +26,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.4"
+version = "0.6.5"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 
@@ -82,6 +82,8 @@ foca = { version = "1", features = ["bincode-codec", "tracing"] }
 futures = "0.3"
 futures-util = "0.3"
 governor = "0.10"
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
 hex = "0.4"
 hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
 hkdf = "0.12"
@@ -106,7 +108,9 @@ parking_lot = "0.12"
 multihash = "0.19"
 p256 = { version = "0.13", features = ["ecdsa"] }
 p384 = { version = "0.13", features = ["ecdsa"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 rand = "0.8"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 redis = { version = "1.0", features = ["tokio-comp", "connection-manager"] }
 regex = "1"
 rsa = "0.9"

@@ -14,13 +14,18 @@ tranquil-signal = { workspace = true }
 
 arc-swap = { workspace = true }
 axum = { workspace = true }
+bytes = { workspace = true }
 clap = { workspace = true }
 dotenvy = { workspace = true }
 ed25519-dalek = { workspace = true }
 futures-util = { workspace = true }
+h3 = { workspace = true }
+h3-quinn = { workspace = true }
 hex = { workspace = true }
+http = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+quinn = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 thiserror = { workspace = true }
@@ -30,6 +35,9 @@ tokio-util = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
 
 [features]
 default = ["frontend", "s3", "valkey"]

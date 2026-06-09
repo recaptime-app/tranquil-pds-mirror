@@ -128,6 +128,14 @@
 # Can also be specified via environment variable `TLS_KEY_PATH`.
 #key_path =
 
+# Serve HTTP/3 over QUIC on the same UDP port as the TCP listener.
+# Requires cert_path and key_path.
+#
+# Can also be specified via environment variable `TLS_HTTP3`.
+#
+# Default value: false
+#http3 = false
+
 [frontend]
 # Whether to enable the built in serving of the frontend.
 #

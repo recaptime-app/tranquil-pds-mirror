@@ -933,7 +933,9 @@ pub async fn get_test_block_store() -> &'static tranquil_pds::repo::AnyBlockStor
 #[allow(dead_code)]
 pub async fn get_test_app_state() -> &'static AppState {
     base_url().await;
-    TEST_APP_STATE.get().expect("TEST_APP_STATE not initialized")
+    TEST_APP_STATE
+        .get()
+        .expect("TEST_APP_STATE not initialized")
 }
 
 #[allow(dead_code)]
