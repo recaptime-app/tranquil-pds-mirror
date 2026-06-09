@@ -11,13 +11,14 @@ tranquil-infra = { workspace = true }
 async-trait = { workspace = true }
 backon = { workspace = true }
 bincode = { workspace = true }
-bytes = { workspace = true }
 foca = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
+quinn = { workspace = true }
 rand = "0.9"
+rcgen = { workspace = true }
+rustls = { workspace = true }
 serde = { workspace = true }
-socket2 = "0.6.2"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util", "sync", "time"] }
 tokio-util = { workspace = true }

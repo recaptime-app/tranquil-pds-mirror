@@ -1,27 +1,44 @@
 use backon::{ExponentialBuilder, Retryable};
-use bytes::{Buf, BufMut, BytesMut};
+use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
+use quinn::{
+    ClientConfig, Connection, Endpoint, IdleTimeout, RecvStream, ServerConfig, TransportConfig,
+    VarInt,
+};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-pub(crate) const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_FRAME_SIZE: usize = 4 * 1024 * 1024;
 const MAX_INBOUND_CONNECTIONS: usize = 512;
 const MAX_OUTBOUND_CONNECTIONS: usize = 512;
+const MAX_CONCURRENT_UNI_STREAMS: u32 = 64;
+const READ_CHUNK_BYTES: usize = 256 * 1024;
+const INCOMING_CHANNEL_DEPTH: usize = 1024;
+const STREAM_RECEIVE_WINDOW: u32 = MAX_FRAME_SIZE as u32;
+const CONNECTION_RECEIVE_WINDOW: u32 = 16 * 1024 * 1024;
+const KEEPALIVE: Duration = Duration::from_secs(20);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const RIPPLE_ALPN: &[u8] = b"ripple/1";
+const RIPPLE_SERVER_NAME: &str = "ripple";
+
+struct NodeIdentity {
+    cert: CertificateDer<'static>,
+    key: PrivateKeyDer<'static>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ChannelTag {
     Gossip = 0x01,
     CrdtSync = 0x02,
-    Raft = 0x03,
-    Direct = 0x04,
 }
 
 impl ChannelTag {
@@ -29,8 +46,6 @@ impl ChannelTag {
         match v {
             0x01 => Some(Self::Gossip),
             0x02 => Some(Self::CrdtSync),
-            0x03 => Some(Self::Raft),
-            0x04 => Some(Self::Direct),
             _ => None,
         }
     }
@@ -43,20 +58,18 @@ pub struct IncomingFrame {
     pub data: Vec<u8>,
 }
 
-struct ConnectionWriter {
-    tx: mpsc::Sender<Vec<u8>>,
+struct PeerConn {
+    conn: Connection,
     generation: u64,
 }
 
 pub struct Transport {
+    endpoint: Endpoint,
     local_addr: SocketAddr,
-    _machine_id: u64,
-    connections: Arc<parking_lot::Mutex<HashMap<SocketAddr, ConnectionWriter>>>,
+    connections: Arc<parking_lot::Mutex<HashMap<SocketAddr, PeerConn>>>,
     connecting: Arc<parking_lot::Mutex<std::collections::HashSet<SocketAddr>>>,
     conn_generation: Arc<AtomicU64>,
-    #[allow(dead_code)]
-    inbound_count: Arc<AtomicUsize>,
-    outbound_count: Arc<AtomicUsize>,
+    outbound_permits: Arc<Semaphore>,
     shutdown: CancellationToken,
     incoming_tx: mpsc::Sender<IncomingFrame>,
 }
@@ -64,67 +77,70 @@ pub struct Transport {
 impl Transport {
     pub async fn bind(
         addr: SocketAddr,
-        machine_id: u64,
         shutdown: CancellationToken,
     ) -> Result<(Self, mpsc::Receiver<IncomingFrame>), std::io::Error> {
-        let listener = TcpListener::bind(addr).await?;
-        let local_addr = listener.local_addr()?;
-        let (incoming_tx, incoming_rx) = mpsc::channel(4096);
-        let inbound_count = Arc::new(AtomicUsize::new(0));
+        let server_config = build_server_config()
+            .map_err(|e| std::io::Error::other(format!("ripple server config: {e}")))?;
+        let client_config = build_client_config()
+            .map_err(|e| std::io::Error::other(format!("ripple client config: {e}")))?;
+
+        let mut endpoint = Endpoint::server(server_config, addr)?;
+        endpoint.set_default_client_config(client_config);
+        let local_addr = endpoint.local_addr()?;
+        let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_CHANNEL_DEPTH);
 
         let transport = Self {
+            endpoint: endpoint.clone(),
             local_addr,
-            _machine_id: machine_id,
             connections: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             connecting: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
             conn_generation: Arc::new(AtomicU64::new(0)),
-            inbound_count: inbound_count.clone(),
-            outbound_count: Arc::new(AtomicUsize::new(0)),
+            outbound_permits: Arc::new(Semaphore::new(MAX_OUTBOUND_CONNECTIONS)),
             shutdown: shutdown.clone(),
             incoming_tx: incoming_tx.clone(),
         };
 
+        let inbound_permits = Arc::new(Semaphore::new(MAX_INBOUND_CONNECTIONS));
         let cancel = shutdown.clone();
-        let inbound_counter = inbound_count.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
-                    result = listener.accept() => {
-                        match result {
-                            Ok((stream, peer_addr)) => {
-                                let current = inbound_counter.load(Ordering::Relaxed);
-                                if current >= MAX_INBOUND_CONNECTIONS {
-                                    tracing::warn!(
-                                        peer = %peer_addr,
-                                        count = current,
-                                        max = MAX_INBOUND_CONNECTIONS,
-                                        "rejecting inbound connection: limit reached"
-                                    );
-                                    drop(stream);
-                                    continue;
-                                }
-                                inbound_counter.fetch_add(1, Ordering::Relaxed);
-                                configure_socket(&stream);
-                                Self::spawn_reader(
-                                    stream,
-                                    peer_addr,
-                                    incoming_tx.clone(),
-                                    cancel.clone(),
-                                    inbound_counter.clone(),
-                                );
-                                tracing::debug!(peer = %peer_addr, "accepted inbound connection");
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "accept failed");
-                            }
+                    incoming = endpoint.accept() => {
+                        let Some(incoming) = incoming else { break };
+                        if !incoming.remote_address_validated() {
+                            let _ = incoming.retry();
+                            continue;
                         }
+                        let Ok(permit) = inbound_permits.clone().try_acquire_owned() else {
+                            tracing::warn!(
+                                peer = %incoming.remote_address(),
+                                max = MAX_INBOUND_CONNECTIONS,
+                                "rejecting inbound connection: limit reached"
+                            );
+                            incoming.refuse();
+                            continue;
+                        };
+                        let tx = incoming_tx.clone();
+                        let conn_cancel = cancel.child_token();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            match incoming.await {
+                                Ok(conn) => {
+                                    let from = conn.remote_address();
+                                    tracing::debug!(peer = %from, "accepted inbound connection");
+                                    run_conn_reader(conn, from, tx, conn_cancel).await;
+                                }
+                                Err(e) => tracing::warn!(error = %e, "inbound handshake failed"),
+                            }
+                        });
                     }
                 }
             }
+            endpoint.close(0u32.into(), b"shutdown");
         });
 
-        tracing::info!(addr = %local_addr, "ripple transport bound");
+        tracing::info!(addr = %local_addr, "ripple quic transport bound");
         Ok((transport, incoming_rx))
     }
 
@@ -133,45 +149,42 @@ impl Transport {
     }
 
     pub fn try_queue(&self, target: SocketAddr, tag: ChannelTag, data: &[u8]) -> bool {
-        let frame = match encode_frame(tag, data) {
-            Some(f) => f,
-            None => return false,
-        };
-        let conns = self.connections.lock();
-        match conns.get(&target) {
-            Some(writer) => writer.tx.try_send(frame).is_ok(),
-            None => false,
-        }
+        let conn = self.connections.lock().get(&target).map(|p| p.conn.clone());
+        let Some(conn) = conn else { return false };
+        let data = data.to_vec();
+        tokio::spawn(async move {
+            if let Err(e) = write_frame(&conn, tag, &data).await {
+                tracing::debug!(error = %e, "queued write failed");
+            }
+        });
+        true
     }
 
     pub async fn send(&self, target: SocketAddr, tag: ChannelTag, data: &[u8]) {
-        let frame = match encode_frame(tag, data) {
-            Some(f) => f,
-            None => return,
-        };
-        let writer = {
-            let conns = self.connections.lock();
-            conns.get(&target).map(|w| (w.tx.clone(), w.generation))
-        };
-        match writer {
-            Some((tx, acquired_gen)) => {
-                if tx.send(frame).await.is_err() {
+        let existing = self
+            .connections
+            .lock()
+            .get(&target)
+            .map(|p| (p.conn.clone(), p.generation));
+        if let Some((conn, generation)) = existing {
+            match write_frame(&conn, tag, data).await {
+                Ok(()) => return,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    tracing::debug!(peer = %target, "write timed out, keeping connection");
+                    return;
+                }
+                Err(_) => {
+                    let mut conns = self.connections.lock();
+                    if conns
+                        .get(&target)
+                        .is_some_and(|p| p.generation == generation)
                     {
-                        let mut conns = self.connections.lock();
-                        let stale = conns
-                            .get(&target)
-                            .is_some_and(|w| w.generation == acquired_gen);
-                        if stale {
-                            conns.remove(&target);
-                        }
+                        conns.remove(&target);
                     }
-                    self.connect_and_send(target, tag, data).await;
                 }
             }
-            None => {
-                self.connect_and_send(target, tag, data).await;
-            }
         }
+        self.connect_and_send(target, tag, data).await;
     }
 
     async fn connect_and_send(&self, target: SocketAddr, tag: ChannelTag, data: &[u8]) {
@@ -184,17 +197,29 @@ impl Transport {
             connecting.insert(target);
         }
 
-        let result = self.connect_and_send_inner(target, tag, data).await;
+        self.connect_and_send_inner(target, tag, data).await;
         self.connecting.lock().remove(&target);
-        result
     }
 
     async fn connect_and_send_inner(&self, target: SocketAddr, tag: ChannelTag, data: &[u8]) {
+        let Ok(permit) = self.outbound_permits.clone().try_acquire_owned() else {
+            tracing::warn!(
+                peer = %target,
+                max = MAX_OUTBOUND_CONNECTIONS,
+                "outbound connection limit reached, dropping"
+            );
+            return;
+        };
         let shutdown = self.shutdown.clone();
-        let stream = (|| async {
-            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(target))
+        let endpoint = self.endpoint.clone();
+        let conn = (|| async {
+            let connecting = endpoint
+                .connect(target, RIPPLE_SERVER_NAME)
+                .map_err(std::io::Error::other)?;
+            tokio::time::timeout(CONNECT_TIMEOUT, connecting)
                 .await
                 .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout"))?
+                .map_err(std::io::Error::other)
         })
         .retry(
             ExponentialBuilder::default()
@@ -204,74 +229,44 @@ impl Transport {
         )
         .when(|_| !shutdown.is_cancelled())
         .await;
-        match stream {
-            Ok(stream) => {
-                if self.outbound_count.load(Ordering::Relaxed) >= MAX_OUTBOUND_CONNECTIONS {
-                    tracing::warn!(
-                        peer = %target,
-                        max = MAX_OUTBOUND_CONNECTIONS,
-                        "outbound connection limit reached, dropping"
-                    );
-                    return;
-                }
-                self.outbound_count.fetch_add(1, Ordering::Relaxed);
-                configure_socket(&stream);
-                let (read_half, write_half) = stream.into_split();
-                let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(1024);
 
-                let conn_gen = self.conn_generation.fetch_add(1, Ordering::Relaxed);
+        match conn {
+            Ok(conn) => {
+                let generation = self.conn_generation.fetch_add(1, Ordering::Relaxed);
                 self.connections.lock().insert(
                     target,
-                    ConnectionWriter {
-                        tx: write_tx.clone(),
-                        generation: conn_gen,
+                    PeerConn {
+                        conn: conn.clone(),
+                        generation,
                     },
                 );
-                if let Some(frame) = encode_frame(tag, data) {
-                    let _ = write_tx.try_send(frame);
+                if let Err(e) = write_frame(&conn, tag, data).await {
+                    tracing::warn!(peer = %target, error = %e, "initial write failed");
                 }
 
-                let conn_cancel = self.shutdown.child_token();
-                let reader_cancel = conn_cancel.clone();
-                let connections = self.connections.clone();
-                let outbound_counter = self.outbound_count.clone();
-                let peer = target;
+                let reader_cancel = self.shutdown.child_token();
+                tokio::spawn(run_conn_reader(
+                    conn.clone(),
+                    target,
+                    self.incoming_tx.clone(),
+                    reader_cancel.clone(),
+                ));
 
+                let connections = self.connections.clone();
                 tokio::spawn(async move {
-                    let mut writer = write_half;
-                    loop {
-                        tokio::select! {
-                            _ = conn_cancel.cancelled() => break,
-                            msg = write_rx.recv() => {
-                                match msg {
-                                    Some(buf) => {
-                                        let write_result = tokio::time::timeout(
-                                            WRITE_TIMEOUT,
-                                            writer.write_all(&buf),
-                                        ).await;
-                                        match write_result {
-                                            Ok(Ok(())) => {}
-                                            Ok(Err(e)) => {
-                                                tracing::warn!(peer = %peer, error = %e, "write failed, closing connection");
-                                                break;
-                                            }
-                                            Err(_) => {
-                                                tracing::warn!(peer = %peer, "write timed out, closing connection");
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    None => break,
-                                }
-                            }
+                    let _permit = permit;
+                    conn.closed().await;
+                    {
+                        let mut conns = connections.lock();
+                        if conns
+                            .get(&target)
+                            .is_some_and(|p| p.generation == generation)
+                        {
+                            conns.remove(&target);
                         }
                     }
-                    connections.lock().remove(&peer);
-                    outbound_counter.fetch_sub(1, Ordering::Relaxed);
-                    conn_cancel.cancel();
+                    reader_cancel.cancel();
                 });
-
-                Self::spawn_reader_half(read_half, target, self.incoming_tx.clone(), reader_cancel);
                 tracing::debug!(peer = %target, "established outbound connection");
             }
             Err(e) => {
@@ -279,164 +274,223 @@ impl Transport {
             }
         }
     }
-
-    fn spawn_reader(
-        stream: TcpStream,
-        peer_addr: SocketAddr,
-        incoming_tx: mpsc::Sender<IncomingFrame>,
-        cancel: CancellationToken,
-        inbound_counter: Arc<AtomicUsize>,
-    ) {
-        tokio::spawn(async move {
-            let mut buf = BytesMut::with_capacity(8192);
-            let mut stream = stream;
-            loop {
-                if buf.len() > MAX_FRAME_SIZE * 2 {
-                    tracing::warn!(peer = %peer_addr, buf_len = buf.len(), "read buffer exceeded limit, closing connection");
-                    break;
-                }
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    n = stream.read_buf(&mut buf) => {
-                        match n {
-                            Ok(0) | Err(_) => break,
-                            Ok(_) => {
-                                if !Self::process_frames(&mut buf, peer_addr, &incoming_tx) {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            inbound_counter.fetch_sub(1, Ordering::Relaxed);
-        });
-    }
-
-    fn spawn_reader_half(
-        read_half: tokio::net::tcp::OwnedReadHalf,
-        peer_addr: SocketAddr,
-        incoming_tx: mpsc::Sender<IncomingFrame>,
-        cancel: CancellationToken,
-    ) {
-        tokio::spawn(async move {
-            let mut buf = BytesMut::with_capacity(8192);
-            let mut reader = read_half;
-            loop {
-                if buf.len() > MAX_FRAME_SIZE * 2 {
-                    tracing::warn!(peer = %peer_addr, buf_len = buf.len(), "read buffer exceeded limit, closing connection");
-                    break;
-                }
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    n = reader.read_buf(&mut buf) => {
-                        match n {
-                            Ok(0) | Err(_) => break,
-                            Ok(_) => {
-                                if !Self::process_frames(&mut buf, peer_addr, &incoming_tx) {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            cancel.cancel();
-        });
-    }
-
-    fn process_frames(
-        buf: &mut BytesMut,
-        peer_addr: SocketAddr,
-        incoming_tx: &mpsc::Sender<IncomingFrame>,
-    ) -> bool {
-        loop {
-            match decode_frame(buf) {
-                DecodeResult::Frame(tag, data) => {
-                    if let Err(e) = incoming_tx.try_send(IncomingFrame {
-                        from: peer_addr,
-                        tag,
-                        data,
-                    }) {
-                        tracing::warn!(peer = %peer_addr, error = %e, "incoming frame channel full, dropping frame");
-                    }
-                }
-                DecodeResult::NeedMoreData => return true,
-                DecodeResult::Corrupt => return false,
-            }
-        }
-    }
 }
 
-fn configure_socket(stream: &TcpStream) {
-    let sock_ref = socket2::SockRef::from(stream);
-    if let Err(e) = sock_ref.set_tcp_nodelay(true) {
-        tracing::warn!(error = %e, "failed to set TCP_NODELAY");
-    }
-    let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(30));
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    let keepalive = keepalive.with_interval(Duration::from_secs(10));
-    let params = keepalive;
-    if let Err(e) = sock_ref.set_tcp_keepalive(&params) {
-        tracing::warn!(error = %e, "failed to set TCP keepalive");
-    }
-}
-
-fn encode_frame(tag: ChannelTag, data: &[u8]) -> Option<Vec<u8>> {
-    match data.len() > MAX_FRAME_SIZE {
-        true => {
-            tracing::warn!(
-                frame_len = data.len(),
-                max = MAX_FRAME_SIZE,
-                "refusing to encode oversized frame"
-            );
-            None
-        }
-        false => {
-            let len = u32::try_from(data.len()).ok()?;
-            let mut buf = Vec::with_capacity(5 + data.len());
-            buf.put_u32(len);
-            buf.put_u8(tag as u8);
-            buf.extend_from_slice(data);
-            Some(buf)
-        }
-    }
-}
-
-enum DecodeResult {
-    Frame(ChannelTag, Vec<u8>),
-    NeedMoreData,
-    Corrupt,
-}
-
-fn decode_frame(buf: &mut BytesMut) -> DecodeResult {
+async fn run_conn_reader(
+    conn: Connection,
+    from: SocketAddr,
+    incoming_tx: mpsc::Sender<IncomingFrame>,
+    cancel: CancellationToken,
+) {
     loop {
-        if buf.len() < 5 {
-            return DecodeResult::NeedMoreData;
-        }
-        let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-        if len > MAX_FRAME_SIZE {
-            tracing::warn!(
-                frame_len = len,
-                max = MAX_FRAME_SIZE,
-                "oversized frame, closing connection"
-            );
-            buf.clear();
-            return DecodeResult::Corrupt;
-        }
-        if buf.len() < 5 + len {
-            return DecodeResult::NeedMoreData;
-        }
-        buf.advance(4);
-        let tag_byte = buf[0];
-        buf.advance(1);
-        let data = buf.split_to(len).to_vec();
-        match ChannelTag::from_u8(tag_byte) {
-            Some(tag) => return DecodeResult::Frame(tag, data),
-            None => {
-                tracing::debug!(tag = tag_byte, "skipping frame with unknown channel tag");
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            accepted = conn.accept_uni() => match accepted {
+                Ok(recv) => {
+                    tokio::spawn(read_frame(
+                        recv,
+                        from,
+                        incoming_tx.clone(),
+                    ));
+                }
+                Err(_) => break,
             }
         }
+    }
+}
+
+enum FrameReadError {
+    Oversize,
+    Stream(String),
+}
+
+async fn read_frame(recv: RecvStream, from: SocketAddr, incoming_tx: mpsc::Sender<IncomingFrame>) {
+    let read = async {
+        let mut recv = recv;
+        let mut tag_byte = [0u8; 1];
+        recv.read_exact(&mut tag_byte)
+            .await
+            .map_err(|e| FrameReadError::Stream(e.to_string()))?;
+        let mut data = Vec::with_capacity(READ_CHUNK_BYTES);
+        loop {
+            match recv.read_chunk(READ_CHUNK_BYTES, true).await {
+                Ok(Some(chunk)) => {
+                    let len = chunk.bytes.len();
+                    if data.len() + len > MAX_FRAME_SIZE {
+                        return Err(FrameReadError::Oversize);
+                    }
+                    data.extend_from_slice(&chunk.bytes);
+                }
+                Ok(None) => break,
+                Err(e) => return Err(FrameReadError::Stream(e.to_string())),
+            }
+        }
+        Ok::<(u8, Vec<u8>), FrameReadError>((tag_byte[0], data))
+    };
+
+    match tokio::time::timeout(READ_TIMEOUT, read).await {
+        Ok(Ok((tag_byte, data))) => match ChannelTag::from_u8(tag_byte) {
+            Some(tag) => {
+                let frame = IncomingFrame { from, tag, data };
+                if let Err(e) = incoming_tx.try_send(frame) {
+                    tracing::warn!(peer = %from, error = %e, "incoming frame channel full, dropping frame");
+                }
+            }
+            None => tracing::debug!(tag = tag_byte, "unknown channel tag, dropping frame"),
+        },
+        Ok(Err(FrameReadError::Oversize)) => {
+            tracing::debug!(peer = %from, max = MAX_FRAME_SIZE, "inbound frame exceeds max size, dropping");
+        }
+        Ok(Err(FrameReadError::Stream(msg))) => {
+            tracing::debug!(peer = %from, error = %msg, "failed reading uni stream");
+        }
+        Err(_) => {
+            tracing::debug!(peer = %from, "inbound frame read timed out, dropping");
+        }
+    }
+}
+
+async fn write_frame(conn: &Connection, tag: ChannelTag, data: &[u8]) -> std::io::Result<()> {
+    if data.len() > MAX_FRAME_SIZE {
+        tracing::warn!(
+            frame_len = data.len(),
+            max = MAX_FRAME_SIZE,
+            "refusing to send oversized frame"
+        );
+        return Ok(());
+    }
+    let timed_out = || std::io::Error::new(std::io::ErrorKind::TimedOut, "write timeout");
+    let deadline = tokio::time::Instant::now() + WRITE_TIMEOUT;
+    match tokio::time::timeout_at(deadline, conn.open_uni()).await {
+        Ok(Ok(mut send)) => {
+            let write = async {
+                send.write_all(&[tag as u8])
+                    .await
+                    .map_err(std::io::Error::other)?;
+                send.write_all(data).await.map_err(std::io::Error::other)?;
+                send.finish().map_err(std::io::Error::other)
+            };
+            let outcome = tokio::time::timeout_at(deadline, write).await;
+            match outcome {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => {
+                    let _ = send.reset(0u32.into());
+                    Err(e)
+                }
+                Err(_) => {
+                    let _ = send.reset(0u32.into());
+                    Err(timed_out())
+                }
+            }
+        }
+        Ok(Err(e)) => Err(std::io::Error::other(e)),
+        Err(_) => Err(timed_out()),
+    }
+}
+
+fn transport_config() -> TransportConfig {
+    let mut tc = TransportConfig::default();
+    tc.max_concurrent_uni_streams(VarInt::from(MAX_CONCURRENT_UNI_STREAMS));
+    tc.stream_receive_window(VarInt::from_u32(STREAM_RECEIVE_WINDOW));
+    tc.receive_window(VarInt::from_u32(CONNECTION_RECEIVE_WINDOW));
+    tc.keep_alive_interval(Some(KEEPALIVE));
+    tc.max_idle_timeout(Some(
+        IdleTimeout::try_from(IDLE_TIMEOUT).expect("idle timeout fits in varint"),
+    ));
+    tc
+}
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+fn ephemeral_identity() -> Result<NodeIdentity, BoxError> {
+    let cert = rcgen::generate_simple_self_signed(vec![RIPPLE_SERVER_NAME.to_string()])?;
+    Ok(NodeIdentity {
+        cert: cert.cert.der().clone(),
+        key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der())),
+    })
+}
+
+fn build_server_config() -> Result<ServerConfig, BoxError> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let builder = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])?;
+    let ephemeral = ephemeral_identity()?;
+    let mut crypto = builder
+        .with_no_client_auth()
+        .with_single_cert(vec![ephemeral.cert], ephemeral.key)?;
+    crypto.alpn_protocols = vec![RIPPLE_ALPN.to_vec()];
+
+    let mut config = ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(crypto)?));
+    config.transport_config(Arc::new(transport_config()));
+    Ok(config)
+}
+
+fn build_client_config() -> Result<ClientConfig, BoxError> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = Arc::new(SkipServerVerification::new(provider.clone()));
+    let mut crypto = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    crypto.alpn_protocols = vec![RIPPLE_ALPN.to_vec()];
+
+    let mut config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(crypto)?));
+    config.transport_config(Arc::new(transport_config()));
+    Ok(config)
+}
+
+#[derive(Debug)]
+struct SkipServerVerification(Arc<rustls::crypto::CryptoProvider>);
+
+impl SkipServerVerification {
+    fn new(provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
+        Self(provider)
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
     }
 }
 
@@ -444,50 +498,89 @@ fn decode_frame(buf: &mut BytesMut) -> DecodeResult {
 mod tests {
     use super::*;
 
-    #[test]
-    fn frame_roundtrip() {
-        let original = b"hello world";
-        let encoded = encode_frame(ChannelTag::Gossip, original).expect("should encode");
-        let mut buf = BytesMut::from(&encoded[..]);
-        match decode_frame(&mut buf) {
-            DecodeResult::Frame(tag, data) => {
-                assert_eq!(tag, ChannelTag::Gossip);
-                assert_eq!(data, original);
-            }
-            _ => panic!("expected frame"),
-        }
-        assert!(buf.is_empty());
+    #[tokio::test]
+    async fn quic_frame_roundtrip() {
+        let shutdown = CancellationToken::new();
+        let (sender, _rx_sender) =
+            Transport::bind("127.0.0.1:0".parse().unwrap(), shutdown.clone())
+                .await
+                .expect("bind sender");
+        let (receiver, mut rx_receiver) =
+            Transport::bind("127.0.0.1:0".parse().unwrap(), shutdown.clone())
+                .await
+                .expect("bind receiver");
+        let target = receiver.local_addr();
+
+        sender
+            .send(target, ChannelTag::Gossip, b"hello ripple")
+            .await;
+
+        let frame = tokio::time::timeout(Duration::from_secs(5), rx_receiver.recv())
+            .await
+            .expect("frame arrives before timeout")
+            .expect("channel open");
+        assert_eq!(frame.tag, ChannelTag::Gossip);
+        assert_eq!(frame.data, b"hello ripple");
+
+        shutdown.cancel();
     }
 
-    #[test]
-    fn partial_frame_returns_need_more() {
-        let encoded = encode_frame(ChannelTag::CrdtSync, b"test data").expect("should encode");
-        let mut buf = BytesMut::from(&encoded[..3]);
-        assert!(matches!(decode_frame(&mut buf), DecodeResult::NeedMoreData));
+    #[tokio::test]
+    async fn distinct_channels_roundtrip() {
+        let shutdown = CancellationToken::new();
+        let (sender, _rx_sender) =
+            Transport::bind("127.0.0.1:0".parse().unwrap(), shutdown.clone())
+                .await
+                .expect("bind sender");
+        let (receiver, mut rx_receiver) =
+            Transport::bind("127.0.0.1:0".parse().unwrap(), shutdown.clone())
+                .await
+                .expect("bind receiver");
+        let target = receiver.local_addr();
+
+        sender.send(target, ChannelTag::Gossip, b"first").await;
+        sender.send(target, ChannelTag::CrdtSync, b"second").await;
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let frame = tokio::time::timeout(Duration::from_secs(5), rx_receiver.recv())
+                .await
+                .expect("frame arrives before timeout")
+                .expect("channel open");
+            seen.push((frame.tag, frame.data));
+        }
+        assert!(seen.contains(&(ChannelTag::Gossip, b"first".to_vec())));
+        assert!(seen.contains(&(ChannelTag::CrdtSync, b"second".to_vec())));
+
+        shutdown.cancel();
     }
 
-    #[test]
-    fn multiple_frames() {
-        let f1 = encode_frame(ChannelTag::Gossip, b"first").expect("should encode");
-        let f2 = encode_frame(ChannelTag::Direct, b"second").expect("should encode");
-        let mut buf = BytesMut::new();
-        buf.extend_from_slice(&f1);
-        buf.extend_from_slice(&f2);
+    #[tokio::test]
+    async fn incoming_frame_from_matches_peer_listen_addr() {
+        let shutdown = CancellationToken::new();
+        let (sender, _rx_sender) =
+            Transport::bind("127.0.0.1:0".parse().unwrap(), shutdown.clone())
+                .await
+                .expect("bind sender");
+        let (receiver, mut rx_receiver) =
+            Transport::bind("127.0.0.1:0".parse().unwrap(), shutdown.clone())
+                .await
+                .expect("bind receiver");
 
-        match decode_frame(&mut buf) {
-            DecodeResult::Frame(tag1, data1) => {
-                assert_eq!(tag1, ChannelTag::Gossip);
-                assert_eq!(data1, b"first");
-            }
-            _ => panic!("expected frame"),
-        }
+        sender
+            .send(receiver.local_addr(), ChannelTag::Gossip, b"addr check")
+            .await;
 
-        match decode_frame(&mut buf) {
-            DecodeResult::Frame(tag2, data2) => {
-                assert_eq!(tag2, ChannelTag::Direct);
-                assert_eq!(data2, b"second");
-            }
-            _ => panic!("expected frame"),
-        }
+        let frame = tokio::time::timeout(Duration::from_secs(5), rx_receiver.recv())
+            .await
+            .expect("frame arrives before timeout")
+            .expect("channel open");
+        assert_eq!(
+            frame.from,
+            sender.local_addr(),
+            "inbound frames must report the peer's canonical listen address"
+        );
+
+        shutdown.cancel();
     }
 }

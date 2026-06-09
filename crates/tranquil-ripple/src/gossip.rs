@@ -265,7 +265,6 @@ impl GossipEngine {
                                     }
                                 }
                             }
-                            _ => {}
                         }
                     }
                     _ = gossip_tick.tick() => {
