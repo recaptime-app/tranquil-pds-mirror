@@ -50,6 +50,14 @@ pub fn describe_metrics() {
         "tranquil_ripple_gossip_delta_bytes",
         "Size of CRDT delta chunks in bytes"
     );
+    metrics::describe_counter!(
+        "tranquil_ripple_transport_write_failures_total",
+        "Total outbound frame writes that failed or timed out"
+    );
+    metrics::describe_counter!(
+        "tranquil_ripple_transport_inbound_dropped_total",
+        "Total inbound frames dropped because the buffer budget was saturated"
+    );
 }
 
 pub fn record_cache_hit() {
@@ -102,4 +110,12 @@ pub fn record_gossip_drop() {
 
 pub fn record_gossip_delta_bytes(bytes: usize) {
     histogram!("tranquil_ripple_gossip_delta_bytes").record(bytes as f64);
+}
+
+pub fn record_transport_write_failure() {
+    counter!("tranquil_ripple_transport_write_failures_total").increment(1);
+}
+
+pub fn record_transport_inbound_dropped() {
+    counter!("tranquil_ripple_transport_inbound_dropped_total").increment(1);
 }
