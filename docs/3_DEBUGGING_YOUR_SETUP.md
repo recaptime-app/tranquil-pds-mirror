@@ -4,7 +4,7 @@ PDSs are part of a distributed system with many different actors and services in
 > View the note on backups at the bottom of "Welcome to Tranquil PDS".
 
 # General
-As always debugging starts with good tools for investigating what is going wrong. For atproto those tools are primarily <pdsls.dev> and <debug.hose.cam>. They are your friends! Get acquainted with them.
+As always debugging starts with good tools for investigating what is going wrong. For atproto those tools are primarily [PDSls](https://pdsls.dev) and [debug.hose.cam](https://debug.hose.cam). They are your friends! Get acquainted with them.
 
 PDSls is (as the name implies) good for debugging the PDS side of things: is your PDS up? accessible to the outside world (or at least your PC)? what does the firehose coming from your PDS look like? but also other account level details: is your handle valid? what are your current rotation keys? signing key? etc.
 
