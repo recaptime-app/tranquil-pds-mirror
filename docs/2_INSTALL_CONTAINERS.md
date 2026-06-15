@@ -318,8 +318,8 @@ Follow the prompts to add TXT records to your DNS. Note: manual mode doesn't aut
 
 Link the certificates into place:
 ```sh
-ln -sf /srv/tranquil-pds/certs/live/pds.example.com/fullchain.pem /srv/tranquil-pds/certs/fullchain.pem
-ln -sf /srv/tranquil-pds/certs/live/pds.example.com/privkey.pem /srv/tranquil-pds/certs/privkey.pem
+ln -sf live/pds.example.com/fullchain.pem /srv/tranquil-pds/certs/fullchain.pem
+ln -sf live/pds.example.com/privkey.pem /srv/tranquil-pds/certs/privkey.pem
 ```
 
 Restart nginx to load them:
