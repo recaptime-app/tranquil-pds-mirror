@@ -14,6 +14,8 @@ in
 {
   _class = "nixos";
 
+  disabledModules = [ "services/web-apps/tranquil-pds.nix" ];
+
   options.services.tranquil-pds = {
     enable = lib.mkEnableOption "tranquil-pds AT Protocol personal data server";
 
