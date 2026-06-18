@@ -1,3 +1,5 @@
+ARG DISTROLESS_IMAGE=gcr.io/distroless/cc-debian13:latest@sha256:1e3c6d9c255be500eb680cdea0ad07554f52ae92dfcbdf07043a2a435b4c1fe3
+
 FROM node:24-trixie-slim AS frontend
 RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
@@ -8,8 +10,26 @@ RUN pnpm build
 
 FROM rust:1.96-slim-trixie AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates pkg-config libssl-dev mold clang protobuf-compiler \
+      ca-certificates pkg-config libssl-dev mold clang protobuf-compiler curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
+ARG COMPRESS="true"
+RUN set -eux; \
+    if [ "$COMPRESS" = "true" ]; then \
+      arch="$(uname -m)"; \
+      case "$arch" in \
+        x86_64)  upx_arch=amd64; upx_sha=ddc2654063fe4dc80d95b420788494e4db078ebb01a650692d623b5a9906e61e ;; \
+        aarch64) upx_arch=arm64; upx_sha=100310f74eb6f67694d1d0377f1c729b6a49238ce8c4de21ea2e7d3406186f8b ;; \
+        *) echo "upx: no prebuilt binary for $arch, skipping compression"; upx_arch="" ;; \
+      esac; \
+      if [ -n "$upx_arch" ]; then \
+        curl -fsSL -o /tmp/upx.tar.xz "https://github.com/upx/upx/releases/download/v5.0.2/upx-5.0.2-${upx_arch}_linux.tar.xz"; \
+        echo "${upx_sha}  /tmp/upx.tar.xz" | sha256sum -c -; \
+        tar -xJf /tmp/upx.tar.xz -C /tmp; \
+        install -m0755 "/tmp/upx-5.0.2-${upx_arch}_linux/upx" /usr/local/bin/upx; \
+        rm -rf /tmp/upx.tar.xz "/tmp/upx-5.0.2-${upx_arch}_linux"; \
+      fi; \
+    fi
+RUN mkdir -p /stage/var/lib/tranquil-pds/blobs /stage/var/lib/tranquil-pds/store
 ENV RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=mold"
 WORKDIR /app
 ARG SLIM="false"
@@ -46,16 +66,15 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     else \
       SQLX_OFFLINE=true cargo build --release -p tranquil-server; \
     fi && \
-    cp target/release/tranquil-server /tmp/tranquil-pds
+    cp target/release/tranquil-server /tmp/tranquil-pds && \
+    if [ "$COMPRESS" = "true" ] && command -v upx >/dev/null 2>&1; then upx --best --lzma /tmp/tranquil-pds; fi
 
-FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+FROM ${DISTROLESS_IMAGE}
 COPY --from=builder /tmp/tranquil-pds /usr/local/bin/tranquil-pds
-COPY --from=frontend /app/dist /var/lib/tranquil-pds/frontend
-WORKDIR /app
+COPY --from=builder --chown=65532:65532 /stage/var/lib/tranquil-pds /var/lib/tranquil-pds
+COPY --from=frontend --chown=65532:65532 /app/dist /var/lib/tranquil-pds/frontend
+WORKDIR /var/lib/tranquil-pds
 ENV SERVER_HOST=[::]
 ENV SERVER_PORT=3000
 EXPOSE 3000
-CMD ["tranquil-pds"]
+ENTRYPOINT ["/usr/local/bin/tranquil-pds"]
