@@ -78,7 +78,10 @@ pub fn with_host_from_authority(app: Router) -> Router {
                 .uri()
                 .authority()
                 .map(|a| HeaderValue::from_str(a.as_str()));
-            match (request.headers().contains_key(http::header::HOST), authority) {
+            match (
+                request.headers().contains_key(http::header::HOST),
+                authority,
+            ) {
                 (false, Some(Ok(value))) => {
                     request.headers_mut().insert(http::header::HOST, value);
                     request

@@ -43,6 +43,38 @@ pub(crate) fn map_sqlx_error(e: sqlx::Error) -> DbError {
     }
 }
 
+async fn consume_invite_code(
+    conn: &mut sqlx::PgConnection,
+    code: &str,
+    user_id: Uuid,
+) -> Result<(), tranquil_db_traits::CreateAccountError> {
+    let map_err = |e: sqlx::Error| tranquil_db_traits::CreateAccountError::Database(e.to_string());
+
+    let decremented = sqlx::query!(
+        "UPDATE invite_codes SET available_uses = available_uses - 1 WHERE code = $1 AND available_uses > 0 AND COALESCE(disabled, false) = false",
+        code
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?
+    .rows_affected();
+
+    if decremented == 0 {
+        return Err(tranquil_db_traits::CreateAccountError::InviteCodeUnavailable);
+    }
+
+    sqlx::query!(
+        "INSERT INTO invite_code_uses (code, used_by_user) VALUES ($1, $2)",
+        code,
+        user_id
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(map_err)?;
+
+    Ok(())
+}
+
 #[async_trait]
 impl UserRepository for PostgresUserRepository {
     async fn get_by_did(&self, did: &Did) -> Result<Option<UserRow>, DbError> {
@@ -2521,20 +2553,7 @@ impl UserRepository for PostgresUserRepository {
         })?;
 
         if let Some(code) = &input.invite_code {
-            let _ = sqlx::query!(
-                "UPDATE invite_codes SET available_uses = available_uses - 1 WHERE code = $1",
-                code
-            )
-            .execute(&mut *tx)
-            .await;
-
-            let _ = sqlx::query!(
-                "INSERT INTO invite_code_uses (code, used_by_user) VALUES ($1, $2)",
-                code,
-                user_id
-            )
-            .execute(&mut *tx)
-            .await;
+            consume_invite_code(&mut tx, code, user_id).await?;
         }
 
         if let Some(birthdate_pref) = &input.birthdate_pref {
@@ -2649,23 +2668,6 @@ impl UserRepository for PostgresUserRepository {
         .map_err(|e: sqlx::Error| {
             tranquil_db_traits::CreateAccountError::Database(e.to_string())
         })?;
-
-        if let Some(code) = &input.invite_code {
-            let _ = sqlx::query!(
-                "UPDATE invite_codes SET available_uses = available_uses - 1 WHERE code = $1",
-                code
-            )
-            .execute(&mut *tx)
-            .await;
-
-            let _ = sqlx::query!(
-                "INSERT INTO invite_code_uses (code, used_by_user) VALUES ($1, $2)",
-                code,
-                user_id
-            )
-            .execute(&mut *tx)
-            .await;
-        }
 
         tx.commit().await.map_err(|e: sqlx::Error| {
             tranquil_db_traits::CreateAccountError::Database(e.to_string())
@@ -2784,20 +2786,7 @@ impl UserRepository for PostgresUserRepository {
         })?;
 
         if let Some(code) = &input.invite_code {
-            let _ = sqlx::query!(
-                "UPDATE invite_codes SET available_uses = available_uses - 1 WHERE code = $1",
-                code
-            )
-            .execute(&mut *tx)
-            .await;
-
-            let _ = sqlx::query!(
-                "INSERT INTO invite_code_uses (code, used_by_user) VALUES ($1, $2)",
-                code,
-                user_id
-            )
-            .execute(&mut *tx)
-            .await;
+            consume_invite_code(&mut tx, code, user_id).await?;
         }
 
         if let Some(birthdate_pref) = &input.birthdate_pref {
@@ -2932,20 +2921,7 @@ impl UserRepository for PostgresUserRepository {
         })?;
 
         if let Some(code) = &input.invite_code {
-            let _ = sqlx::query!(
-                "UPDATE invite_codes SET available_uses = available_uses - 1 WHERE code = $1",
-                code
-            )
-            .execute(&mut *tx)
-            .await;
-
-            let _ = sqlx::query!(
-                "INSERT INTO invite_code_uses (code, used_by_user) VALUES ($1, $2)",
-                code,
-                user_id
-            )
-            .execute(&mut *tx)
-            .await;
+            consume_invite_code(&mut tx, code, user_id).await?;
         }
 
         if let Some(birthdate_pref) = &input.birthdate_pref {
@@ -3122,38 +3098,6 @@ impl UserRepository for PostgresUserRepository {
             .map_err(map_sqlx_error)?;
 
         Ok(result.rows_affected())
-    }
-
-    async fn check_and_consume_invite_code(&self, code: &str) -> Result<bool, DbError> {
-        let mut tx = self.pool.begin().await.map_err(map_sqlx_error)?;
-
-        let invite = sqlx::query!(
-            "SELECT available_uses FROM invite_codes WHERE code = $1 FOR UPDATE",
-            code
-        )
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_sqlx_error)?;
-
-        let Some(row) = invite else {
-            return Ok(false);
-        };
-
-        if row.available_uses <= 0 {
-            return Ok(false);
-        }
-
-        sqlx::query!(
-            "UPDATE invite_codes SET available_uses = available_uses - 1 WHERE code = $1",
-            code
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(map_sqlx_error)?;
-
-        tx.commit().await.map_err(map_sqlx_error)?;
-
-        Ok(true)
     }
 
     async fn complete_passkey_setup(

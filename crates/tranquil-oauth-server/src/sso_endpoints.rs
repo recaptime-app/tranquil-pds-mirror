@@ -10,6 +10,7 @@ use tranquil_db_traits::{SsoAction, SsoProviderType};
 use tranquil_types::RequestId;
 
 use tranquil_pds::api::error::ApiError;
+use tranquil_pds::api::invite::check_registration_invite;
 use tranquil_pds::auth::extractor::extract_auth_token_from_header;
 use tranquil_pds::auth::{generate_app_password, validate_bearer_token_cached};
 use tranquil_pds::rate_limit::{
@@ -985,18 +986,8 @@ pub async fn complete_registration(
         None => None,
     };
 
-    let _validated_invite_code = if let Some(ref code) = input.invite_code {
-        match state.repos.infra.validate_invite_code(code).await {
-            Ok(validated) => Some(validated),
-            Err(_) => return Err(ApiError::InvalidInviteCode),
-        }
-    } else {
-        let invite_required = tranquil_config::get().server.invite_code_required;
-        if invite_required {
-            return Err(ApiError::InviteCodeRequired);
-        }
-        None
-    };
+    let invite_registration =
+        check_registration_invite(&state, input.invite_code.as_deref()).await?;
 
     let handle_typed: tranquil_pds::types::Handle =
         handle.parse().map_err(|_| ApiError::InvalidHandle(None))?;
@@ -1169,7 +1160,7 @@ pub async fn complete_registration(
         commit_cid: commit_cid.to_string(),
         repo_rev: rev.as_ref().to_string(),
         genesis_block_cids,
-        invite_code: input.invite_code.clone(),
+        invite_code: invite_registration.into_invite_code(),
         birthdate_pref,
         sso_provider: pending_preview.provider,
         sso_provider_user_id: pending_preview.provider_user_id.clone().into_inner(),
@@ -1195,6 +1186,9 @@ pub async fn complete_registration(
         }
         Err(tranquil_db_traits::CreateAccountError::InvalidToken) => {
             return Err(ApiError::SsoSessionExpired);
+        }
+        Err(tranquil_db_traits::CreateAccountError::InviteCodeUnavailable) => {
+            return Err(ApiError::InvalidInviteCode);
         }
         Err(e) => {
             tracing::error!("Error creating SSO account: {:?}", e);

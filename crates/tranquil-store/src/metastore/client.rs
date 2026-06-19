@@ -1916,35 +1916,6 @@ impl<S: StorageIO + 'static> tranquil_db_traits::InfraRepository for MetastoreCl
         Ok(ValidatedInviteCode::new_validated(code))
     }
 
-    async fn decrement_invite_code_uses(
-        &self,
-        code: &ValidatedInviteCode<'_>,
-    ) -> Result<(), DbError> {
-        let (tx, rx) = oneshot::channel();
-        self.pool.send(MetastoreRequest::Infra(
-            InfraRequest::DecrementInviteCodeUses {
-                code: code.code().to_owned(),
-                tx,
-            },
-        ))?;
-        recv(rx).await
-    }
-
-    async fn record_invite_code_use(
-        &self,
-        code: &ValidatedInviteCode<'_>,
-        used_by_user: Uuid,
-    ) -> Result<(), DbError> {
-        let (tx, rx) = oneshot::channel();
-        self.pool
-            .send(MetastoreRequest::Infra(InfraRequest::RecordInviteCodeUse {
-                code: code.code().to_owned(),
-                used_by_user,
-                tx,
-            }))?;
-        recv(rx).await
-    }
-
     async fn get_invite_codes_for_account(
         &self,
         for_account: &Did,
@@ -5005,17 +4976,6 @@ impl<S: StorageIO + 'static> tranquil_db_traits::UserRepository for MetastoreCli
         let (tx, rx) = oneshot::channel();
         self.pool.send(MetastoreRequest::User(
             UserRequest::CleanupExpiredHandleReservations { tx },
-        ))?;
-        recv(rx).await
-    }
-
-    async fn check_and_consume_invite_code(&self, code: &str) -> Result<bool, DbError> {
-        let (tx, rx) = oneshot::channel();
-        self.pool.send(MetastoreRequest::User(
-            UserRequest::CheckAndConsumeInviteCode {
-                code: code.to_owned(),
-                tx,
-            },
         ))?;
         recv(rx).await
     }

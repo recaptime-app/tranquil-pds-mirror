@@ -339,6 +339,7 @@ impl Metastore {
             self.partitions[Partition::Users.index()].clone(),
             Arc::clone(&self.user_hashes),
             Arc::clone(&self.comms_seq),
+            Arc::clone(&self.counter_lock),
         )
     }
 

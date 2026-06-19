@@ -1,4 +1,5 @@
 pub mod error;
+pub mod invite;
 pub mod proxy;
 pub mod proxy_client;
 pub mod responses;

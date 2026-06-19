@@ -38,6 +38,7 @@ use uuid::Uuid;
 use super::MetastoreError;
 use super::commit_ops::CommitOps;
 use super::event_ops::EventOps;
+use super::infra_ops::InfraOps;
 use super::keys::UserHash;
 use super::record_ops::ListRecordsQuery;
 use super::user_hash::UserHashMap;
@@ -48,6 +49,59 @@ use crate::io::{RealIO, StorageIO};
 use crate::metastore::Metastore;
 
 type Tx<T> = oneshot::Sender<Result<T, DbError>>;
+
+fn reserve_invite(infra: &InfraOps, code: Option<&str>) -> Result<(), CreateAccountError> {
+    match code {
+        Some(code) => infra.reserve_invite_code(code).map_err(|e| match e {
+            InviteCodeError::DatabaseError(e) => CreateAccountError::Database(e.to_string()),
+            _ => CreateAccountError::InviteCodeUnavailable,
+        }),
+        None => Ok(()),
+    }
+}
+
+fn record_invite_use(
+    infra: &InfraOps,
+    code: Option<&str>,
+    user_id: Uuid,
+) -> Result<(), CreateAccountError> {
+    match code {
+        Some(code) => {
+            let validated = ValidatedInviteCode::new_validated(code);
+            infra
+                .record_invite_code_use(&validated, user_id)
+                .map_err(|e| CreateAccountError::Database(e.to_string()))
+        }
+        None => Ok(()),
+    }
+}
+
+fn refund_invite(infra: &InfraOps, code: Option<&str>) {
+    if let Some(code) = code
+        && let Err(e) = infra.refund_invite_code(code)
+    {
+        tracing::error!("failed to refund invite code after account creation failed: {e:?}");
+    }
+}
+
+fn finalize_account<T>(
+    infra: &InfraOps,
+    code: Option<&str>,
+    created: Result<T, CreateAccountError>,
+    after: impl FnOnce(&T) -> Result<Uuid, CreateAccountError>,
+) -> Result<T, CreateAccountError> {
+    match created {
+        Ok(result) => {
+            let user_id = after(&result)?;
+            record_invite_use(infra, code, user_id)?;
+            Ok(result)
+        }
+        Err(e) => {
+            refund_invite(infra, code);
+            Err(e)
+        }
+    }
+}
 
 fn metastore_to_db(e: MetastoreError) -> DbError {
     match e {
@@ -1546,10 +1600,6 @@ pub enum UserRequest {
     CleanupExpiredHandleReservations {
         tx: Tx<u64>,
     },
-    CheckAndConsumeInviteCode {
-        code: String,
-        tx: Tx<bool>,
-    },
     CompletePasskeySetup {
         input: CompletePasskeySetupInput,
         tx: Tx<()>,
@@ -1749,7 +1799,6 @@ impl UserRequest {
             | Self::GetUserForPasskeyRecovery { .. }
             | Self::GetAccountsScheduledForDeletion { .. }
             | Self::CleanupExpiredHandleReservations { .. }
-            | Self::CheckAndConsumeInviteCode { .. }
             | Self::GetPasswordResetInfo { .. }
             | Self::ExpirePasswordResetCode { .. }
             | Self::SaveDiscoverableChallenge { .. }
@@ -1809,15 +1858,6 @@ pub enum InfraRequest {
     ValidateInviteCode {
         code: String,
         tx: oneshot::Sender<Result<(), InviteCodeError>>,
-    },
-    DecrementInviteCodeUses {
-        code: String,
-        tx: Tx<()>,
-    },
-    RecordInviteCodeUse {
-        code: String,
-        used_by_user: Uuid,
-        tx: Tx<()>,
     },
     GetInviteCodesForAccount {
         for_account: Did,
@@ -2061,9 +2101,6 @@ impl InfraRequest {
             Self::CreateInviteCodesBatch {
                 created_by_user, ..
             } => uuid_to_routing(user_hashes, created_by_user),
-            Self::RecordInviteCodeUse { used_by_user, .. } => {
-                uuid_to_routing(user_hashes, used_by_user)
-            }
             Self::EnqueueComms {
                 user_id: Some(uid), ..
             } => uuid_to_routing(user_hashes, uid),
@@ -3936,28 +3973,6 @@ fn dispatch_infra<S: StorageIO>(state: &HandlerState<S>, req: InfraRequest) {
                 .map(|_| ());
             let _ = tx.send(result);
         }
-        InfraRequest::DecrementInviteCodeUses { code, tx } => {
-            let validated = ValidatedInviteCode::new_validated(&code);
-            let result = state
-                .metastore
-                .infra_ops()
-                .decrement_invite_code_uses(&validated)
-                .map_err(metastore_to_db);
-            let _ = tx.send(result);
-        }
-        InfraRequest::RecordInviteCodeUse {
-            code,
-            used_by_user,
-            tx,
-        } => {
-            let validated = ValidatedInviteCode::new_validated(&code);
-            let result = state
-                .metastore
-                .infra_ops()
-                .record_invite_code_use(&validated, used_by_user)
-                .map_err(metastore_to_db);
-            let _ = tx.send(result);
-        }
         InfraRequest::GetInviteCodesForAccount { for_account, tx } => {
             let result = state
                 .metastore
@@ -5799,15 +5814,17 @@ fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserReque
             let _ = tx.send(result.map(|_| ()));
         }
         UserRequest::CreatePasswordAccount { input, tx } => {
-            let result = user.create_password_account(&input).and_then(|result| {
-                if let Some(key_id) = input.reserved_key_id {
-                    state
-                        .metastore
-                        .infra_ops()
-                        .mark_signing_key_used(key_id)
-                        .map_err(|e| CreateAccountError::Database(e.to_string()))?;
-                }
-                Ok(result)
+            let infra = state.metastore.infra_ops();
+            let code = input.invite_code.as_deref();
+            let result = reserve_invite(&infra, code).and_then(|()| {
+                finalize_account(&infra, code, user.create_password_account(&input), |result| {
+                    if let Some(key_id) = input.reserved_key_id {
+                        infra
+                            .mark_signing_key_used(key_id)
+                            .map_err(|e| CreateAccountError::Database(e.to_string()))?;
+                    }
+                    Ok(result.user_id)
+                })
             });
             let _ = tx.send(result);
         }
@@ -5838,35 +5855,41 @@ fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserReque
             let _ = tx.send(result);
         }
         UserRequest::CreatePasskeyAccount { input, tx } => {
-            let result = user.create_passkey_account(&input).and_then(|result| {
-                if let Some(key_id) = input.reserved_key_id {
-                    state
-                        .metastore
-                        .infra_ops()
-                        .mark_signing_key_used(key_id)
-                        .map_err(|e| CreateAccountError::Database(e.to_string()))?;
-                }
-                Ok(result)
+            let infra = state.metastore.infra_ops();
+            let code = input.invite_code.as_deref();
+            let result = reserve_invite(&infra, code).and_then(|()| {
+                finalize_account(&infra, code, user.create_passkey_account(&input), |result| {
+                    if let Some(key_id) = input.reserved_key_id {
+                        infra
+                            .mark_signing_key_used(key_id)
+                            .map_err(|e| CreateAccountError::Database(e.to_string()))?;
+                    }
+                    Ok(result.user_id)
+                })
             });
             let _ = tx.send(result);
         }
         UserRequest::CreateSsoAccount { input, tx } => {
             let sso_ops = state.metastore.sso_ops();
+            let infra = state.metastore.infra_ops();
+            let code = input.invite_code.as_deref();
             let result = sso_ops
                 .consume_pending_registration(&input.pending_registration_token)
                 .map_err(|e| CreateAccountError::Database(e.to_string()))
                 .and_then(|consumed| match consumed {
-                    Some(_) => user.create_sso_account(&input).and_then(|result| {
-                        sso_ops
-                            .create_external_identity(
-                                &input.did,
-                                input.sso_provider,
-                                &input.sso_provider_user_id,
-                                input.sso_provider_username.as_deref(),
-                                input.sso_provider_email.as_deref(),
-                            )
-                            .map_err(|e| CreateAccountError::Database(e.to_string()))?;
-                        Ok(result)
+                    Some(_) => reserve_invite(&infra, code).and_then(|()| {
+                        finalize_account(&infra, code, user.create_sso_account(&input), |result| {
+                            sso_ops
+                                .create_external_identity(
+                                    &input.did,
+                                    input.sso_provider,
+                                    &input.sso_provider_user_id,
+                                    input.sso_provider_username.as_deref(),
+                                    input.sso_provider_email.as_deref(),
+                                )
+                                .map_err(|e| CreateAccountError::Database(e.to_string()))?;
+                            Ok(result.user_id)
+                        })
                     }),
                     None => Err(CreateAccountError::InvalidToken),
                 });
@@ -5902,17 +5925,6 @@ fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserReque
                 user.cleanup_expired_handle_reservations()
                     .map_err(metastore_to_db),
             );
-        }
-        UserRequest::CheckAndConsumeInviteCode { code, tx } => {
-            let infra = state.metastore.infra_ops();
-            let result = match infra.validate_invite_code(&code) {
-                Ok(validated) => infra
-                    .decrement_invite_code_uses(&validated)
-                    .map(|()| true)
-                    .map_err(metastore_to_db),
-                Err(_) => Ok(false),
-            };
-            let _ = tx.send(result);
         }
         UserRequest::CompletePasskeySetup { input, tx } => {
             let _ = tx.send(user.complete_passkey_setup(&input).map_err(metastore_to_db));
@@ -6185,6 +6197,84 @@ mod tests {
         let repo = rx.await.unwrap().unwrap().unwrap();
         assert_eq!(repo.repo_root_cid, cid);
         assert_eq!(repo.repo_rev.as_deref(), Some("rev1"));
+    }
+
+    #[test]
+    fn reserve_invite_code_consumes_once_and_guards_exhaustion() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let metastore = Metastore::open(
+            dir.path(),
+            MetastoreConfig {
+                cache_size_bytes: 64 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        let infra = metastore.infra_ops();
+
+        assert!(infra.create_invite_code("squid-invite", 1, None).unwrap());
+
+        infra.reserve_invite_code("squid-invite").unwrap();
+        assert_eq!(
+            infra
+                .get_invite_code_available_uses("squid-invite")
+                .unwrap(),
+            Some(0)
+        );
+
+        assert!(matches!(
+            infra.reserve_invite_code("squid-invite"),
+            Err(InviteCodeError::ExhaustedUses)
+        ));
+        assert_eq!(
+            infra
+                .get_invite_code_available_uses("squid-invite")
+                .unwrap(),
+            Some(0),
+            "a rejected reservation must not decrement below zero"
+        );
+
+        assert!(matches!(
+            infra.reserve_invite_code("whelk"),
+            Err(InviteCodeError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn refund_invite_code_restores_a_reserved_use() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let metastore = Metastore::open(
+            dir.path(),
+            MetastoreConfig {
+                cache_size_bytes: 64 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        let infra = metastore.infra_ops();
+
+        assert!(infra.create_invite_code("squid-invite", 1, None).unwrap());
+
+        infra.reserve_invite_code("squid-invite").unwrap();
+        infra.refund_invite_code("squid-invite").unwrap();
+        assert_eq!(
+            infra
+                .get_invite_code_available_uses("squid-invite")
+                .unwrap(),
+            Some(1),
+            "refund must return the reserved use so a failed signup does not burn it"
+        );
+
+        infra.reserve_invite_code("squid-invite").unwrap();
+        assert_eq!(
+            infra
+                .get_invite_code_available_uses("squid-invite")
+                .unwrap(),
+            Some(0)
+        );
+
+        assert!(matches!(
+            infra.refund_invite_code("whelk"),
+            Err(InviteCodeError::NotFound)
+        ));
     }
 
     #[test]

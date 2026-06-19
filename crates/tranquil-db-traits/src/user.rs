@@ -589,8 +589,6 @@ pub trait UserRepository: Send + Sync {
 
     async fn cleanup_expired_handle_reservations(&self) -> Result<u64, DbError>;
 
-    async fn check_and_consume_invite_code(&self, code: &str) -> Result<bool, DbError>;
-
     async fn complete_passkey_setup(
         &self,
         input: &CompletePasskeySetupInput,
@@ -1019,6 +1017,7 @@ pub enum CreateAccountError {
     EmailTaken,
     DidExists,
     InvalidToken,
+    InviteCodeUnavailable,
     Database(String),
 }
 
@@ -1034,7 +1033,6 @@ pub struct CreateDelegatedAccountInput {
     pub commit_cid: String,
     pub repo_rev: String,
     pub genesis_block_cids: Vec<Vec<u8>>,
-    pub invite_code: Option<String>,
 }
 
 #[derive(Debug, Clone)]

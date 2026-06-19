@@ -225,38 +225,6 @@ impl InfraRepository for PostgresInfraRepository {
         }
     }
 
-    async fn decrement_invite_code_uses(
-        &self,
-        code: &ValidatedInviteCode<'_>,
-    ) -> Result<(), DbError> {
-        sqlx::query!(
-            "UPDATE invite_codes SET available_uses = available_uses - 1 WHERE code = $1",
-            code.code()
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx_error)?;
-
-        Ok(())
-    }
-
-    async fn record_invite_code_use(
-        &self,
-        code: &ValidatedInviteCode<'_>,
-        used_by_user: Uuid,
-    ) -> Result<(), DbError> {
-        sqlx::query!(
-            "INSERT INTO invite_code_uses (code, used_by_user) VALUES ($1, $2)",
-            code.code(),
-            used_by_user
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx_error)?;
-
-        Ok(())
-    }
-
     async fn get_invite_codes_for_account(
         &self,
         for_account: &Did,

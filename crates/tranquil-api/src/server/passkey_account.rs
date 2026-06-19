@@ -7,6 +7,7 @@ use serde_json::json;
 use tracing::{debug, error, info, warn};
 use tranquil_db_traits::WebauthnChallengeType;
 use tranquil_pds::api::error::ApiError;
+use tranquil_pds::api::invite::check_registration_invite;
 use tranquil_pds::api::{OptionsResponse, SuccessResponse};
 use tranquil_pds::auth::NormalizedLoginIdentifier;
 
@@ -119,26 +120,8 @@ pub async fn create_passkey_account(
         return Err(ApiError::InvalidEmail);
     }
 
-    let is_bootstrap = state.bootstrap_invite_code.is_some()
-        && state.repos.user.count_users().await.unwrap_or(1) == 0;
-
-    let _validated_invite_code = if is_bootstrap {
-        match input.invite_code.as_deref() {
-            Some(code) if Some(code) == state.bootstrap_invite_code.as_deref() => None,
-            _ => return Err(ApiError::InvalidInviteCode),
-        }
-    } else if let Some(ref code) = input.invite_code {
-        match state.repos.infra.validate_invite_code(code).await {
-            Ok(validated) => Some(validated),
-            Err(_) => return Err(ApiError::InvalidInviteCode),
-        }
-    } else {
-        let invite_required = tranquil_config::get().server.invite_code_required;
-        if invite_required {
-            return Err(ApiError::InviteCodeRequired);
-        }
-        None
-    };
+    let invite_registration =
+        check_registration_invite(&state, input.invite_code.as_deref()).await?;
 
     let verification_channel = input
         .verification_channel
@@ -343,11 +326,7 @@ pub async fn create_passkey_account(
         commit_cid: repo.commit_cid.to_string(),
         repo_rev: repo.repo_rev.clone(),
         genesis_block_cids: repo.genesis_block_cids,
-        invite_code: if is_bootstrap {
-            None
-        } else {
-            input.invite_code.clone()
-        },
+        invite_code: invite_registration.into_invite_code(),
         birthdate_pref,
     };
 
@@ -358,6 +337,9 @@ pub async fn create_passkey_account(
         }
         Err(tranquil_db_traits::CreateAccountError::EmailTaken) => {
             return Err(ApiError::EmailTaken);
+        }
+        Err(tranquil_db_traits::CreateAccountError::InviteCodeUnavailable) => {
+            return Err(ApiError::InvalidInviteCode);
         }
         Err(e) => {
             error!("Error creating passkey account: {:?}", e);

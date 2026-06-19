@@ -268,17 +268,6 @@ pub trait InfraRepository: Send + Sync {
         code: &'a str,
     ) -> Result<ValidatedInviteCode<'a>, InviteCodeError>;
 
-    async fn decrement_invite_code_uses(
-        &self,
-        code: &ValidatedInviteCode<'_>,
-    ) -> Result<(), DbError>;
-
-    async fn record_invite_code_use(
-        &self,
-        code: &ValidatedInviteCode<'_>,
-        used_by_user: Uuid,
-    ) -> Result<(), DbError>;
-
     async fn get_invite_codes_for_account(
         &self,
         for_account: &Did,

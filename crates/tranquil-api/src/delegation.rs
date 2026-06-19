@@ -330,7 +330,6 @@ pub struct CreateDelegatedAccountInput {
     pub handle: String,
     pub email: Option<String>,
     pub controller_scopes: ValidatedDelegationScope,
-    pub invite_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -362,19 +361,6 @@ pub async fn create_delegated_account(
         return Err(ApiError::InvalidEmail);
     }
 
-    let validated_invite_code = if let Some(ref code) = input.invite_code {
-        match state.repos.infra.validate_invite_code(code).await {
-            Ok(validated) => Some(validated),
-            Err(_) => return Err(ApiError::InvalidInviteCode),
-        }
-    } else {
-        let invite_required = tranquil_config::get().server.invite_code_required;
-        if invite_required {
-            return Err(ApiError::InviteCodeRequired);
-        }
-        None
-    };
-
     let plc = create_plc_did(&state, &handle).await.map_err(|e| {
         tracing::error!("PLC DID creation failed: {:?}", e);
         e
@@ -397,16 +383,15 @@ pub async fn create_delegated_account(
         commit_cid: repo.commit_cid.to_string(),
         repo_rev: repo.repo_rev.clone(),
         genesis_block_cids: repo.genesis_block_cids,
-        invite_code: input.invite_code.clone(),
     };
 
-    let user_id = match state
+    match state
         .repos
         .user
         .create_delegated_account(&create_input)
         .await
     {
-        Ok(id) => id,
+        Ok(_) => {}
         Err(tranquil_db_traits::CreateAccountError::HandleTaken) => {
             return Err(ApiError::HandleNotAvailable(None));
         }
@@ -417,16 +402,6 @@ pub async fn create_delegated_account(
             error!("Error creating delegated account: {:?}", e);
             return Err(ApiError::InternalError(None));
         }
-    };
-
-    if let Some(validated) = validated_invite_code
-        && let Err(e) = state
-            .repos
-            .infra
-            .record_invite_code_use(&validated, user_id)
-            .await
-    {
-        warn!("Failed to record invite code use for {}: {:?}", did, e);
     }
 
     crate::identity::provision::sequence_new_account(

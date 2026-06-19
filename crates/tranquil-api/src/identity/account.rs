@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, error, info};
 use tranquil_pds::api::error::ApiError;
+use tranquil_pds::api::invite::check_registration_invite;
 use tranquil_pds::auth::{ServiceTokenVerifier, extract_auth_token_from_header, is_service_token};
 use tranquil_pds::rate_limit::{AccountCreationLimit, RateLimited};
 use tranquil_pds::state::AppState;
@@ -415,40 +416,11 @@ pub async fn create_account(
         return ApiError::HandleTaken.into_response();
     }
 
-    let is_bootstrap = state.bootstrap_invite_code.is_some()
-        && state.repos.user.count_users().await.unwrap_or(1) == 0;
-
-    if is_bootstrap {
-        match input.invite_code.as_deref() {
-            Some(code) if Some(code) == state.bootstrap_invite_code.as_deref() => {}
-            _ => return ApiError::InvalidInviteCode.into_response(),
-        }
-    } else {
-        let invite_code_required = tranquil_config::get().server.invite_code_required;
-        if invite_code_required
-            && input
-                .invite_code
-                .as_ref()
-                .map(|c| c.trim().is_empty())
-                .unwrap_or(true)
-        {
-            return ApiError::InviteCodeRequired.into_response();
-        }
-        if let Some(code) = &input.invite_code
-            && !code.trim().is_empty()
-        {
-            let valid = match state.repos.user.check_and_consume_invite_code(code).await {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("Error checking invite code: {:?}", e);
-                    return ApiError::InternalError(None).into_response();
-                }
-            };
-            if !valid {
-                return ApiError::InvalidInviteCode.into_response();
-            }
-        }
-    }
+    let invite_registration =
+        match check_registration_invite(&state, input.invite_code.as_deref()).await {
+            Ok(outcome) => outcome,
+            Err(e) => return e.into_response(),
+        };
 
     if let Err(e) = validate_password(&input.password) {
         return ApiError::InvalidRequest(e.to_string()).into_response();
@@ -517,11 +489,7 @@ pub async fn create_account(
         commit_cid: commit_cid_str.clone(),
         repo_rev: rev_str.clone(),
         genesis_block_cids: repo.genesis_block_cids,
-        invite_code: if is_bootstrap {
-            None
-        } else {
-            input.invite_code.clone()
-        },
+        invite_code: invite_registration.into_invite_code(),
         birthdate_pref,
     };
 
@@ -540,6 +508,9 @@ pub async fn create_account(
         }
         Err(tranquil_db_traits::CreateAccountError::DidExists) => {
             return ApiError::AccountAlreadyExists.into_response();
+        }
+        Err(tranquil_db_traits::CreateAccountError::InviteCodeUnavailable) => {
+            return ApiError::InvalidInviteCode.into_response();
         }
         Err(e) => {
             error!("Error creating password account: {:?}", e);

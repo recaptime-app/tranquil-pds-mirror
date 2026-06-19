@@ -37,6 +37,7 @@ pub struct InfraOps {
     users: Keyspace,
     user_hashes: Arc<UserHashMap>,
     comms_seq: Arc<std::sync::atomic::AtomicU32>,
+    counter_lock: Arc<parking_lot::Mutex<()>>,
 }
 
 impl InfraOps {
@@ -47,6 +48,7 @@ impl InfraOps {
         users: Keyspace,
         user_hashes: Arc<UserHashMap>,
         comms_seq: Arc<std::sync::atomic::AtomicU32>,
+        counter_lock: Arc<parking_lot::Mutex<()>>,
     ) -> Self {
         Self {
             db,
@@ -55,6 +57,7 @@ impl InfraOps {
             users,
             user_hashes,
             comms_seq,
+            counter_lock,
         }
     }
 
@@ -448,6 +451,36 @@ impl InfraOps {
             Some(v) if v.available_uses <= 0 => Err(InviteCodeError::ExhaustedUses),
             Some(_) => Ok(ValidatedInviteCode::new_validated(code)),
         }
+    }
+
+    pub fn reserve_invite_code(&self, code: &str) -> Result<(), InviteCodeError> {
+        let _guard = self.counter_lock.lock();
+        let validated = self.validate_invite_code(code)?;
+        self.decrement_invite_code_uses(&validated).map_err(|e| {
+            InviteCodeError::DatabaseError(tranquil_db_traits::DbError::Query(e.to_string()))
+        })
+    }
+
+    pub fn refund_invite_code(&self, code: &str) -> Result<(), InviteCodeError> {
+        let _guard = self.counter_lock.lock();
+        let key = invite_code_key(code);
+        let mut val: InviteCodeValue = point_lookup(
+            &self.infra,
+            key.as_slice(),
+            InviteCodeValue::deserialize,
+            "corrupt invite code",
+        )
+        .map_err(|e| {
+            InviteCodeError::DatabaseError(tranquil_db_traits::DbError::Query(e.to_string()))
+        })?
+        .ok_or(InviteCodeError::NotFound)?;
+
+        val.available_uses += 1;
+        self.infra
+            .insert(key.as_slice(), val.serialize())
+            .map_err(|e| {
+                InviteCodeError::DatabaseError(tranquil_db_traits::DbError::Query(e.to_string()))
+            })
     }
 
     pub fn decrement_invite_code_uses(
