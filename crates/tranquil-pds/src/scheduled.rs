@@ -180,6 +180,12 @@ pub async fn collect_current_repo_blocks(
         let block = match block_store.get(&cid).await {
             Ok(Some(b)) => b,
             Ok(None) => continue,
+            Err(e)
+                if crate::api::error::ApiError::detail_is_repo_corruption(&format!("{e:#}")) =>
+            {
+                warn!(cid = %cid, error = %format!("{e:#}"), "skipping corrupt block during repo walk");
+                continue;
+            }
             Err(e) => anyhow::bail!("Failed to get block {}: {:?}", cid, e),
         };
 

@@ -300,30 +300,18 @@ pub async fn repair_repo_structure(
         })?;
 
     if outcome.nodes_repaired > 0 {
-        let block_cids =
-            crate::scheduled::collect_current_repo_blocks(&state.block_store, &current_root_cid)
-                .await
-                .map_err(|e| {
-                    error!("repair: re-walk for user_blocks backfill failed: {}", e);
-                    ApiError::InternalError(None)
-                })?;
-
-        let cids = block_cids
-            .iter()
-            .map(|bytes| Cid::try_from(bytes.as_slice()))
-            .collect::<Result<Vec<Cid>, _>>()
-            .map_err(|e| {
-                error!("repair: unparseable CID in repaired DAG walk: {e}");
-                ApiError::InternalError(None)
-            })?;
-        let present = state.block_store.get_many(&cids).await.map_err(|e| {
-            error!("repair: presence check during user_blocks backfill failed: {e}");
+        let leaf_present = futures::future::try_join_all(
+            entries.iter().map(|(_, cid)| state.block_store.has(cid)),
+        )
+        .await
+        .map_err(|e| {
+            error!("repair: leaf presence check failed: {e}");
             ApiError::InternalError(None)
         })?;
-        let missing: Vec<Cid> = cids
+        let missing: Vec<Cid> = entries
             .iter()
-            .zip(present)
-            .filter_map(|(cid, found)| found.is_none().then_some(*cid))
+            .zip(leaf_present)
+            .filter_map(|((_, cid), present)| (!present).then_some(*cid))
             .collect();
         if !missing.is_empty() {
             error!(
@@ -337,6 +325,14 @@ pub async fn repair_repo_structure(
                 missing.len()
             ))));
         }
+
+        let block_cids =
+            crate::scheduled::collect_current_repo_blocks(&state.block_store, &current_root_cid)
+                .await
+                .map_err(|e| {
+                    error!("repair: re-walk for user_blocks backfill failed: {}", e);
+                    ApiError::InternalError(None)
+                })?;
 
         state
             .repos
