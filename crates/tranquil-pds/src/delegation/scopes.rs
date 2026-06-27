@@ -12,8 +12,7 @@ pub struct ScopePreset {
     pub scopes: &'static str,
 }
 
-pub const OWNER_FULL_SCOPES: &str =
-    "atproto repo:* blob:*/* identity:* account:*?action=manage";
+pub const OWNER_FULL_SCOPES: &str = "atproto repo:* blob:*/* identity:* account:*?action=manage";
 
 pub const EDITOR_FULL_SCOPES: &str =
     "atproto repo:*?action=create repo:*?action=update repo:*?action=delete blob:*/*";
@@ -210,8 +209,7 @@ mod tests {
             .find(|p| p.name == "editor")
             .expect("editor preset")
             .scopes;
-        let requested =
-            "atproto repo:*?action=create identity:* account:*?action=manage blob:*/*";
+        let requested = "atproto repo:*?action=create identity:* account:*?action=manage blob:*/*";
         let result = intersect_scopes(requested, editor);
         assert!(result.split_whitespace().any(|s| s == "atproto"));
         assert!(result.contains("repo:*?action=create"));

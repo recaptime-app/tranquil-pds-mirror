@@ -195,6 +195,7 @@ pub enum RefreshGraceLookup {
     NotUsed,
     Replay(RefreshGraceReplay),
     Compromised {
+        did: Did,
         session_id: SessionId,
         key_bytes: Vec<u8>,
         encryption_version: i32,
@@ -203,6 +204,7 @@ pub enum RefreshGraceLookup {
 
 #[derive(Debug, Clone)]
 pub struct SessionRefreshData {
+    pub did: Did,
     pub old_refresh_jti: String,
     pub session_id: SessionId,
     pub new_access_jti: String,
@@ -225,18 +227,17 @@ pub trait SessionRepository: Send + Sync {
         refresh_jti: &str,
     ) -> Result<Option<SessionForRefresh>, DbError>;
 
-    async fn update_session_tokens(
+    async fn delete_session_by_access_jti(
+        &self,
+        access_jti: &str,
+        did: &Did,
+    ) -> Result<u64, DbError>;
+
+    async fn delete_session_by_id(
         &self,
         session_id: SessionId,
-        new_access_jti: &str,
-        new_refresh_jti: &str,
-        new_access_expires_at: DateTime<Utc>,
-        new_refresh_expires_at: DateTime<Utc>,
-    ) -> Result<(), DbError>;
-
-    async fn delete_session_by_access_jti(&self, access_jti: &str) -> Result<u64, DbError>;
-
-    async fn delete_session_by_id(&self, session_id: SessionId) -> Result<u64, DbError>;
+        did: &Did,
+    ) -> Result<u64, DbError>;
 
     async fn delete_sessions_by_did(&self, did: &Did) -> Result<u64, DbError>;
 

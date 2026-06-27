@@ -125,6 +125,7 @@ fn metastore_to_db(e: MetastoreError) -> DbError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Routing {
     Sharded(u64),
     Global,
@@ -848,20 +849,14 @@ pub enum SessionRequest {
         refresh_jti: String,
         tx: Tx<Option<tranquil_db_traits::SessionForRefresh>>,
     },
-    UpdateSessionTokens {
-        session_id: SessionId,
-        new_access_jti: String,
-        new_refresh_jti: String,
-        new_access_expires_at: DateTime<Utc>,
-        new_refresh_expires_at: DateTime<Utc>,
-        tx: Tx<()>,
-    },
     DeleteSessionByAccessJti {
         access_jti: String,
+        did: Did,
         tx: Tx<u64>,
     },
     DeleteSessionById {
         session_id: SessionId,
+        did: Did,
         tx: Tx<u64>,
     },
     DeleteSessionsByDid {
@@ -955,10 +950,10 @@ impl SessionRequest {
             Self::CreateSession { .. }
             | Self::GetSessionByAccessJti { .. }
             | Self::GetSessionForRefresh { .. }
-            | Self::LookupRefreshGrace { .. }
-            | Self::DeleteSessionByAccessJti { .. }
-            | Self::DeleteSessionById { .. } => Routing::Global,
-            Self::DeleteSessionsByDid { did, .. }
+            | Self::LookupRefreshGrace { .. } => Routing::Global,
+            Self::DeleteSessionByAccessJti { did, .. }
+            | Self::DeleteSessionById { did, .. }
+            | Self::DeleteSessionsByDid { did, .. }
             | Self::DeleteSessionsByDidExceptJti { did, .. }
             | Self::ListSessionsByDid { did, .. }
             | Self::GetSessionAccessJtiById { did, .. }
@@ -970,7 +965,7 @@ impl SessionRequest {
             | Self::GetSessionMfaStatus { did, .. }
             | Self::UpdateMfaVerified { did, .. }
             | Self::GetAppPasswordHashesByDid { did, .. } => did_to_routing(did.as_str()),
-            Self::UpdateSessionTokens { .. } | Self::RefreshSessionAtomic { .. } => Routing::Global,
+            Self::RefreshSessionAtomic { data, .. } => did_to_routing(data.did.as_str()),
             Self::ListAppPasswords { user_id, .. }
             | Self::GetAppPasswordsForLogin { user_id, .. }
             | Self::GetAppPasswordByName { user_id, .. }
@@ -3637,40 +3632,27 @@ fn dispatch_session<S: StorageIO>(state: &HandlerState<S>, req: SessionRequest) 
                 .map_err(metastore_to_db);
             let _ = tx.send(result);
         }
-        SessionRequest::UpdateSessionTokens {
-            session_id,
-            new_access_jti,
-            new_refresh_jti,
-            new_access_expires_at,
-            new_refresh_expires_at,
+        SessionRequest::DeleteSessionByAccessJti {
+            access_jti,
+            did,
             tx,
         } => {
             let result = state
                 .metastore
                 .session_ops()
-                .update_session_tokens(
-                    session_id,
-                    &new_access_jti,
-                    &new_refresh_jti,
-                    new_access_expires_at,
-                    new_refresh_expires_at,
-                )
+                .delete_session_by_access_jti(&access_jti, &did)
                 .map_err(metastore_to_db);
             let _ = tx.send(result);
         }
-        SessionRequest::DeleteSessionByAccessJti { access_jti, tx } => {
+        SessionRequest::DeleteSessionById {
+            session_id,
+            did,
+            tx,
+        } => {
             let result = state
                 .metastore
                 .session_ops()
-                .delete_session_by_access_jti(&access_jti)
-                .map_err(metastore_to_db);
-            let _ = tx.send(result);
-        }
-        SessionRequest::DeleteSessionById { session_id, tx } => {
-            let result = state
-                .metastore
-                .session_ops()
-                .delete_session_by_id(session_id)
+                .delete_session_by_id(session_id, &did)
                 .map_err(metastore_to_db);
             let _ = tx.send(result);
         }
@@ -5799,14 +5781,19 @@ fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserReque
             let infra = state.metastore.infra_ops();
             let code = input.invite_code.as_deref();
             let result = reserve_invite(&infra, code).and_then(|()| {
-                finalize_account(&infra, code, user.create_password_account(&input), |result| {
-                    if let Some(key_id) = input.reserved_key_id {
-                        infra
-                            .mark_signing_key_used(key_id)
-                            .map_err(|e| CreateAccountError::Database(e.to_string()))?;
-                    }
-                    Ok(result.user_id)
-                })
+                finalize_account(
+                    &infra,
+                    code,
+                    user.create_password_account(&input),
+                    |result| {
+                        if let Some(key_id) = input.reserved_key_id {
+                            infra
+                                .mark_signing_key_used(key_id)
+                                .map_err(|e| CreateAccountError::Database(e.to_string()))?;
+                        }
+                        Ok(result.user_id)
+                    },
+                )
             });
             let _ = tx.send(result);
         }
@@ -5840,14 +5827,19 @@ fn dispatch_user<S: StorageIO + 'static>(state: &HandlerState<S>, req: UserReque
             let infra = state.metastore.infra_ops();
             let code = input.invite_code.as_deref();
             let result = reserve_invite(&infra, code).and_then(|()| {
-                finalize_account(&infra, code, user.create_passkey_account(&input), |result| {
-                    if let Some(key_id) = input.reserved_key_id {
-                        infra
-                            .mark_signing_key_used(key_id)
-                            .map_err(|e| CreateAccountError::Database(e.to_string()))?;
-                    }
-                    Ok(result.user_id)
-                })
+                finalize_account(
+                    &infra,
+                    code,
+                    user.create_passkey_account(&input),
+                    |result| {
+                        if let Some(key_id) = input.reserved_key_id {
+                            infra
+                                .mark_signing_key_used(key_id)
+                                .map_err(|e| CreateAccountError::Database(e.to_string()))?;
+                        }
+                        Ok(result.user_id)
+                    },
+                )
             });
             let _ = tx.send(result);
         }
@@ -6278,6 +6270,58 @@ mod tests {
             .map(|_| counter.fetch_add(1, Ordering::Relaxed) % thread_count)
             .collect();
         assert_eq!(indices, vec![0, 1, 2, 3, 0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn session_mutations_route_by_did() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ms = Metastore::open(
+            dir.path(),
+            MetastoreConfig {
+                cache_size_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
+        let user_hashes = ms.user_hashes().as_ref();
+        let did = Did::from("did:plc:limpet".to_string());
+        let expected = did_to_routing(did.as_str());
+        let sid = SessionId::new(7);
+
+        let (tx, _rx) = oneshot::channel();
+        let delete_by_id = SessionRequest::DeleteSessionById {
+            session_id: sid,
+            did: did.clone(),
+            tx,
+        };
+        let (tx, _rx) = oneshot::channel();
+        let delete_by_jti = SessionRequest::DeleteSessionByAccessJti {
+            access_jti: "a".to_string(),
+            did: did.clone(),
+            tx,
+        };
+        let (tx, _rx) = oneshot::channel();
+        let delete_by_did = SessionRequest::DeleteSessionsByDid {
+            did: did.clone(),
+            tx,
+        };
+        let (tx, _rx) = oneshot::channel();
+        let refresh = SessionRequest::RefreshSessionAtomic {
+            data: tranquil_db_traits::SessionRefreshData {
+                did: did.clone(),
+                old_refresh_jti: "r0".to_string(),
+                session_id: sid,
+                new_access_jti: "a1".to_string(),
+                new_refresh_jti: "r1".to_string(),
+                new_access_expires_at: Utc::now(),
+                new_refresh_expires_at: Utc::now(),
+            },
+            tx,
+        };
+
+        assert_eq!(delete_by_id.routing(user_hashes), expected);
+        assert_eq!(delete_by_jti.routing(user_hashes), expected);
+        assert_eq!(delete_by_did.routing(user_hashes), expected);
+        assert_eq!(refresh.routing(user_hashes), expected);
     }
 
     #[tokio::test]

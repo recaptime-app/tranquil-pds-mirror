@@ -114,38 +114,15 @@ impl SessionRepository for PostgresSessionRepository {
         }))
     }
 
-    async fn update_session_tokens(
+    async fn delete_session_by_access_jti(
         &self,
-        session_id: SessionId,
-        new_access_jti: &str,
-        new_refresh_jti: &str,
-        new_access_expires_at: DateTime<Utc>,
-        new_refresh_expires_at: DateTime<Utc>,
-    ) -> Result<(), DbError> {
-        sqlx::query!(
-            r#"
-            UPDATE session_tokens
-            SET access_jti = $1, refresh_jti = $2, access_expires_at = $3,
-                refresh_expires_at = $4, updated_at = NOW()
-            WHERE id = $5
-            "#,
-            new_access_jti,
-            new_refresh_jti,
-            new_access_expires_at,
-            new_refresh_expires_at,
-            session_id.as_i32()
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx_error)?;
-
-        Ok(())
-    }
-
-    async fn delete_session_by_access_jti(&self, access_jti: &str) -> Result<u64, DbError> {
+        access_jti: &str,
+        did: &Did,
+    ) -> Result<u64, DbError> {
         let result = sqlx::query!(
-            "DELETE FROM session_tokens WHERE access_jti = $1",
-            access_jti
+            "DELETE FROM session_tokens WHERE access_jti = $1 AND did = $2",
+            access_jti,
+            did.as_str()
         )
         .execute(&self.pool)
         .await
@@ -154,10 +131,15 @@ impl SessionRepository for PostgresSessionRepository {
         Ok(result.rows_affected())
     }
 
-    async fn delete_session_by_id(&self, session_id: SessionId) -> Result<u64, DbError> {
+    async fn delete_session_by_id(
+        &self,
+        session_id: SessionId,
+        did: &Did,
+    ) -> Result<u64, DbError> {
         let result = sqlx::query!(
-            "DELETE FROM session_tokens WHERE id = $1",
-            session_id.as_i32()
+            "DELETE FROM session_tokens WHERE id = $1 AND did = $2",
+            session_id.as_i32(),
+            did.as_str()
         )
         .execute(&self.pool)
         .await
@@ -308,6 +290,7 @@ impl SessionRepository for PostgresSessionRepository {
             }))
         } else {
             Ok(RefreshGraceLookup::Compromised {
+                did: Did::from(r.did),
                 session_id: SessionId::new(r.session_id),
                 key_bytes: r.key_bytes,
                 encryption_version: r.encryption_version.unwrap_or(0),

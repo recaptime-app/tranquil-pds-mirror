@@ -211,6 +211,7 @@ impl SessionOps {
         }
 
         Ok(RefreshGraceLookup::Compromised {
+            did: Did::from(session.did.clone()),
             session_id: SessionId::new(session_id),
             key_bytes: user.key_bytes,
             encryption_version: user.encryption_version,
@@ -397,72 +398,11 @@ impl SessionOps {
         }
     }
 
-    pub fn update_session_tokens(
+    pub fn delete_session_by_access_jti(
         &self,
-        session_id: SessionId,
-        new_access_jti: &str,
-        new_refresh_jti: &str,
-        new_access_expires_at: DateTime<Utc>,
-        new_refresh_expires_at: DateTime<Utc>,
-    ) -> Result<(), MetastoreError> {
-        let mut session = self
-            .load_session_by_id(session_id.as_i32())?
-            .ok_or(MetastoreError::InvalidInput("session not found"))?;
-
-        let user_hash = self.resolve_user_hash_from_did(&session.did);
-        let old_access_jti = session.access_jti.clone();
-        let old_refresh_jti = session.refresh_jti.clone();
-
-        session.access_jti = new_access_jti.to_owned();
-        session.refresh_jti = new_refresh_jti.to_owned();
-        session.access_expires_at_ms = new_access_expires_at.timestamp_millis();
-        session.refresh_expires_at_ms = new_refresh_expires_at.timestamp_millis();
-        session.updated_at_ms = Utc::now().timestamp_millis();
-
-        let new_access_index = SessionIndexValue {
-            user_hash: user_hash.raw(),
-            session_id: session.id,
-        };
-        let new_refresh_index = SessionIndexValue {
-            user_hash: user_hash.raw(),
-            session_id: session.id,
-        };
-
-        let mut batch = self.db.batch();
-        batch.remove(
-            &self.auth,
-            session_by_access_key(&old_access_jti).as_slice(),
-        );
-        batch.remove(
-            &self.auth,
-            session_by_refresh_key(&old_refresh_jti).as_slice(),
-        );
-        batch.insert(
-            &self.auth,
-            session_primary_key(session.id).as_slice(),
-            session.serialize(),
-        );
-        batch.insert(
-            &self.auth,
-            session_by_access_key(new_access_jti).as_slice(),
-            new_access_index.serialize(session.refresh_expires_at_ms),
-        );
-        batch.insert(
-            &self.auth,
-            session_by_refresh_key(new_refresh_jti).as_slice(),
-            new_refresh_index.serialize(session.refresh_expires_at_ms),
-        );
-        batch.insert(
-            &self.auth,
-            session_by_did_key(user_hash, session.id).as_slice(),
-            serialize_by_did_value(session.refresh_expires_at_ms),
-        );
-        batch.commit().map_err(MetastoreError::Fjall)?;
-
-        Ok(())
-    }
-
-    pub fn delete_session_by_access_jti(&self, access_jti: &str) -> Result<u64, MetastoreError> {
+        access_jti: &str,
+        did: &Did,
+    ) -> Result<u64, MetastoreError> {
         let index_key = session_by_access_key(access_jti);
         let index_val: Option<SessionIndexValue> = point_lookup(
             &self.auth,
@@ -477,8 +417,8 @@ impl SessionOps {
         };
 
         let session = match self.load_session_by_id(idx.session_id)? {
-            Some(s) => s,
-            None => return Ok(0),
+            Some(s) if s.did == did.as_str() => s,
+            _ => return Ok(0),
         };
 
         let mut batch = self.db.batch();
@@ -488,10 +428,14 @@ impl SessionOps {
         Ok(1)
     }
 
-    pub fn delete_session_by_id(&self, session_id: SessionId) -> Result<u64, MetastoreError> {
+    pub fn delete_session_by_id(
+        &self,
+        session_id: SessionId,
+        did: &Did,
+    ) -> Result<u64, MetastoreError> {
         let session = match self.load_session_by_id(session_id.as_i32())? {
-            Some(s) => s,
-            None => return Ok(0),
+            Some(s) if s.did == did.as_str() => s,
+            _ => return Ok(0),
         };
 
         let mut batch = self.db.batch();

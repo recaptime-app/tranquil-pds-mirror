@@ -1463,33 +1463,16 @@ impl<S: StorageIO + 'static> tranquil_db_traits::SessionRepository for Metastore
         recv(rx).await
     }
 
-    async fn update_session_tokens(
+    async fn delete_session_by_access_jti(
         &self,
-        session_id: tranquil_db_traits::SessionId,
-        new_access_jti: &str,
-        new_refresh_jti: &str,
-        new_access_expires_at: DateTime<Utc>,
-        new_refresh_expires_at: DateTime<Utc>,
-    ) -> Result<(), DbError> {
-        let (tx, rx) = oneshot::channel();
-        self.pool.send(MetastoreRequest::Session(
-            SessionRequest::UpdateSessionTokens {
-                session_id,
-                new_access_jti: new_access_jti.to_owned(),
-                new_refresh_jti: new_refresh_jti.to_owned(),
-                new_access_expires_at,
-                new_refresh_expires_at,
-                tx,
-            },
-        ))?;
-        recv(rx).await
-    }
-
-    async fn delete_session_by_access_jti(&self, access_jti: &str) -> Result<u64, DbError> {
+        access_jti: &str,
+        did: &Did,
+    ) -> Result<u64, DbError> {
         let (tx, rx) = oneshot::channel();
         self.pool.send(MetastoreRequest::Session(
             SessionRequest::DeleteSessionByAccessJti {
                 access_jti: access_jti.to_owned(),
+                did: did.clone(),
                 tx,
             },
         ))?;
@@ -1499,10 +1482,15 @@ impl<S: StorageIO + 'static> tranquil_db_traits::SessionRepository for Metastore
     async fn delete_session_by_id(
         &self,
         session_id: tranquil_db_traits::SessionId,
+        did: &Did,
     ) -> Result<u64, DbError> {
         let (tx, rx) = oneshot::channel();
         self.pool.send(MetastoreRequest::Session(
-            SessionRequest::DeleteSessionById { session_id, tx },
+            SessionRequest::DeleteSessionById {
+                session_id,
+                did: did.clone(),
+                tx,
+            },
         ))?;
         recv(rx).await
     }

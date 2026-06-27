@@ -471,8 +471,13 @@ mod tests {
         let ctrl_owner = did("did:plc:olaren");
         let ctrl_editor = did("did:plc:teq");
 
-        ops.create_delegation(&owner, &ctrl_owner, &DbScope::new("atproto").unwrap(), &owner)
-            .unwrap();
+        ops.create_delegation(
+            &owner,
+            &ctrl_owner,
+            &DbScope::new("atproto").unwrap(),
+            &owner,
+        )
+        .unwrap();
         ops.create_delegation(
             &owner,
             &ctrl_editor,
@@ -519,7 +524,11 @@ mod tests {
             UserHash::from_did("did:plc:scallop"),
         );
         let mut batch = ops.db.batch();
-        batch.insert(&ops.indexes, corrupt_key.as_slice(), b"not a grant".as_slice());
+        batch.insert(
+            &ops.indexes,
+            corrupt_key.as_slice(),
+            b"not a grant".as_slice(),
+        );
         batch.commit().unwrap();
 
         assert_eq!(ops.remap_grant_scopes("atproto", OWNER_FULL).unwrap(), 1);

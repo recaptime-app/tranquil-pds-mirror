@@ -225,8 +225,8 @@ fn test_delegation_validate_multiple() {
 }
 
 #[test]
-fn test_delegation_intersect_empty_granted_returns_empty() {
-    assert_eq!(intersect_scopes("atproto", ""), "");
+fn test_delegation_intersect_empty_grant_keeps_only_atproto() {
+    assert_eq!(intersect_scopes("atproto", ""), "atproto");
     assert_eq!(intersect_scopes("repo:*", ""), "");
 }
 

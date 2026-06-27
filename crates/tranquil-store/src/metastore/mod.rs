@@ -396,6 +396,7 @@ impl Metastore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tranquil_types::Did;
 
     fn open_fresh() -> (tempfile::TempDir, Metastore) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -474,6 +475,7 @@ mod tests {
     }
 
     fn legacy_refresh_data(
+        did: &Did,
         session_id: tranquil_db_traits::SessionId,
         old_refresh_jti: &str,
         new_access_jti: &str,
@@ -481,6 +483,7 @@ mod tests {
     ) -> tranquil_db_traits::SessionRefreshData {
         let now = chrono::Utc::now();
         tranquil_db_traits::SessionRefreshData {
+            did: did.clone(),
             old_refresh_jti: old_refresh_jti.to_string(),
             session_id,
             new_access_jti: new_access_jti.to_string(),
@@ -494,15 +497,16 @@ mod tests {
     fn legacy_refresh_grace_replays_within_window() {
         use tranquil_db_traits::{RefreshGraceLookup, RefreshSessionResult};
         let (_dir, ms) = open_fresh();
-        create_test_user(&ms, "did:plc:grace", "grace.test");
+        let did = Did::new("did:plc:grace".to_string()).unwrap();
+        create_test_user(&ms, did.as_str(), "grace.test");
         let ops = ms.session_ops();
 
         let session_id = ops
-            .create_session(&legacy_session_create("did:plc:grace", "acc0", "ref0"))
+            .create_session(&legacy_session_create(did.as_str(), "acc0", "ref0"))
             .unwrap();
 
         // The winning request rotates ref0 -> ref1.
-        let win = legacy_refresh_data(session_id, "ref0", "acc1", "ref1");
+        let win = legacy_refresh_data(&did, session_id, "ref0", "acc1", "ref1");
         assert!(matches!(
             ops.refresh_session_atomic(&win).unwrap(),
             RefreshSessionResult::Success
@@ -523,7 +527,7 @@ mod tests {
 
         // The atomic path (two requests both past the used-check) also yields
         // the winner's current tokens rather than revoking.
-        let lose = legacy_refresh_data(session_id, "ref0", "accX", "refX");
+        let lose = legacy_refresh_data(&did, session_id, "ref0", "accX", "refX");
         match ops.refresh_session_atomic(&lose).unwrap() {
             RefreshSessionResult::GraceReplay(replay) => {
                 assert_eq!(replay.access_jti, "acc1");
@@ -550,16 +554,21 @@ mod tests {
     fn legacy_refresh_superseded_token_within_grace_replays() {
         use tranquil_db_traits::{RefreshGraceLookup, RefreshSessionResult};
         let (_dir, ms) = open_fresh();
-        create_test_user(&ms, "did:plc:reuse", "reuse.test");
+        let did = Did::new("did:plc:reuse".to_string()).unwrap();
+        create_test_user(&ms, did.as_str(), "reuse.test");
         let ops = ms.session_ops();
 
         let session_id = ops
-            .create_session(&legacy_session_create("did:plc:reuse", "acc0", "ref0"))
+            .create_session(&legacy_session_create(did.as_str(), "acc0", "ref0"))
             .unwrap();
-        ops.refresh_session_atomic(&legacy_refresh_data(session_id, "ref0", "acc1", "ref1"))
-            .unwrap();
-        ops.refresh_session_atomic(&legacy_refresh_data(session_id, "ref1", "acc2", "ref2"))
-            .unwrap();
+        ops.refresh_session_atomic(&legacy_refresh_data(
+            &did, session_id, "ref0", "acc1", "ref1",
+        ))
+        .unwrap();
+        ops.refresh_session_atomic(&legacy_refresh_data(
+            &did, session_id, "ref1", "acc2", "ref2",
+        ))
+        .unwrap();
 
         // ref0 is two rotations back but was rotated just now: still in window.
         match ops.lookup_refresh_grace("ref0").unwrap() {
@@ -570,7 +579,7 @@ mod tests {
             other => panic!("expected Replay, got {other:?}"),
         }
         match ops
-            .refresh_session_atomic(&legacy_refresh_data(session_id, "ref0", "z", "z"))
+            .refresh_session_atomic(&legacy_refresh_data(&did, session_id, "ref0", "z", "z"))
             .unwrap()
         {
             RefreshSessionResult::GraceReplay(replay) => {
@@ -581,6 +590,49 @@ mod tests {
         }
         // The session is still alive on the current tokens — nobody logged out.
         assert!(ops.get_session_by_access_jti("acc2").unwrap().is_some());
+    }
+
+    #[test]
+    fn rotated_refresh_jti_is_none_from_fetch_but_replay_from_grace() {
+        use tranquil_db_traits::RefreshGraceLookup;
+        let (_dir, ms) = open_fresh();
+        let did = Did::new("did:plc:whelk".to_string()).unwrap();
+        create_test_user(&ms, did.as_str(), "whelk.test");
+        let ops = ms.session_ops();
+
+        let session_id = ops
+            .create_session(&legacy_session_create(did.as_str(), "acc0", "ref0"))
+            .unwrap();
+        ops.refresh_session_atomic(&legacy_refresh_data(
+            &did, session_id, "ref0", "acc1", "ref1",
+        ))
+        .unwrap();
+
+        assert!(ops.get_session_for_refresh("ref0").unwrap().is_none());
+        match ops.lookup_refresh_grace("ref0").unwrap() {
+            RefreshGraceLookup::Replay(replay) => assert_eq!(replay.refresh_jti, "ref1"),
+            other => panic!("expected Replay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_session_is_scoped_to_did() {
+        let (_dir, ms) = open_fresh();
+        let owner = Did::new("did:plc:limpet".to_string()).unwrap();
+        let other = Did::new("did:plc:scallop".to_string()).unwrap();
+        create_test_user(&ms, owner.as_str(), "limpet.test");
+        let ops = ms.session_ops();
+
+        let session_id = ops
+            .create_session(&legacy_session_create(owner.as_str(), "acc0", "ref0"))
+            .unwrap();
+
+        assert_eq!(ops.delete_session_by_id(session_id, &other).unwrap(), 0);
+        assert_eq!(ops.delete_session_by_access_jti("acc0", &other).unwrap(), 0);
+        assert!(ops.get_session_by_access_jti("acc0").unwrap().is_some());
+
+        assert_eq!(ops.delete_session_by_access_jti("acc0", &owner).unwrap(), 1);
+        assert!(ops.get_session_by_access_jti("acc0").unwrap().is_none());
     }
 
     // An old-format (12-byte, no rotated_at) used marker has unknown rotation
@@ -622,11 +674,12 @@ mod tests {
             REFRESH_GRACE_PERIOD_SECS, RefreshGraceLookup, RefreshSessionResult,
         };
         let (_dir, ms) = open_fresh();
-        create_test_user(&ms, "did:plc:stale", "stale.test");
+        let did = Did::new("did:plc:stale".to_string()).unwrap();
+        create_test_user(&ms, did.as_str(), "stale.test");
         let ops = ms.session_ops();
 
         let session_id = ops
-            .create_session(&legacy_session_create("did:plc:stale", "acc0", "ref0"))
+            .create_session(&legacy_session_create(did.as_str(), "acc0", "ref0"))
             .unwrap();
 
         // Overwrite ref0's used marker with a current 20-byte marker rotated 3h ago,
@@ -659,7 +712,7 @@ mod tests {
         }
 
         assert!(matches!(
-            ops.refresh_session_atomic(&legacy_refresh_data(session_id, "ref0", "z", "z"))
+            ops.refresh_session_atomic(&legacy_refresh_data(&did, session_id, "ref0", "z", "z"))
                 .unwrap(),
             RefreshSessionResult::Compromise
         ));

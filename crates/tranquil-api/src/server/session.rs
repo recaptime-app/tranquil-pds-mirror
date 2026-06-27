@@ -452,7 +452,12 @@ pub async fn delete_session(
 ) -> Result<Json<EmptyResponse>, ApiError> {
     let jti = tranquil_pds::auth::extract_jti_from_headers(&headers)
         .ok_or(ApiError::AuthenticationRequired)?;
-    match state.repos.session.delete_session_by_access_jti(&jti).await {
+    match state
+        .repos
+        .session
+        .delete_session_by_access_jti(&jti, &auth.did)
+        .await
+    {
         Ok(rows) if rows > 0 => {
             let session_cache_key = tranquil_pds::cache_keys::session_key(&auth.did, &jti);
             let _ = state.cache.delete(&session_cache_key).await;
@@ -505,72 +510,15 @@ pub async fn refresh_session(
             )));
         }
     };
-    match state.repos.session.lookup_refresh_grace(&refresh_jti).await {
-        Ok(tranquil_db_traits::RefreshGraceLookup::NotUsed) => {}
-        Ok(tranquil_db_traits::RefreshGraceLookup::Replay(replay)) => {
-            // Verify the presented token's signature before issuing anything: a
-            // rotated jti is a public value, so we must never mint for a forged
-            // unsigned token carrying it.
-            let key = match tranquil_pds::config::decrypt_key(
-                &replay.key_bytes,
-                Some(replay.encryption_version),
-            ) {
-                Ok(k) => k,
-                Err(e) => {
-                    error!("Failed to decrypt user key for grace replay: {:?}", e);
-                    return Err(ApiError::InternalError(None));
-                }
-            };
-            if tranquil_pds::auth::verify_refresh_token(&refresh_token, &key).is_err() {
-                return Err(ApiError::AuthenticationFailed(Some(
-                    "Invalid refresh token".into(),
-                )));
-            }
-            info!(
-                "Refresh token reuse within grace window for jti: {refresh_jti}; replaying tokens"
-            );
-            let (access_jwt, refresh_jwt) = remint_grace_tokens(&replay, &key)?;
-            return build_refresh_session_output(&state, replay.did, access_jwt, refresh_jwt).await;
-        }
-        Ok(tranquil_db_traits::RefreshGraceLookup::Compromised {
-            session_id,
-            key_bytes,
-            encryption_version,
-        }) => {
-            // Never revoke a session for an unverified token: verify the
-            // signature first, so a forged unsigned token cannot force a logout.
-            let key = match tranquil_pds::config::decrypt_key(&key_bytes, Some(encryption_version))
-            {
-                Ok(k) => k,
-                Err(e) => {
-                    error!("Failed to decrypt user key for grace check: {:?}", e);
-                    return Err(ApiError::InternalError(None));
-                }
-            };
-            if tranquil_pds::auth::verify_refresh_token(&refresh_token, &key).is_err() {
-                return Err(ApiError::AuthenticationFailed(Some(
-                    "Invalid refresh token".into(),
-                )));
-            }
-            warn!(
-                "Refresh token reuse outside grace window for jti: {refresh_jti}; revoking session"
-            );
-            if let Err(e) = state.repos.session.delete_session_by_id(session_id).await {
-                error!(
-                    "Failed to revoke session {} for refresh token reuse: {:?}",
-                    session_id.as_i32(),
-                    e
-                );
-                return Err(ApiError::InternalError(None));
-            }
-            return Err(ApiError::AuthenticationFailed(Some(
-                "Refresh token has been revoked due to suspected compromise".into(),
-            )));
-        }
-        Err(e) => {
-            error!("Database error checking refresh token grace: {:?}", e);
-            return Err(ApiError::InternalError(None));
-        }
+    if let Some(result) = dispatch_refresh_grace(
+        &state,
+        &refresh_token,
+        &refresh_jti,
+        state.repos.session.lookup_refresh_grace(&refresh_jti).await,
+    )
+    .await
+    {
+        return result;
     }
     let session_row = match state
         .repos
@@ -580,9 +528,18 @@ pub async fn refresh_session(
     {
         Ok(Some(row)) => row,
         Ok(None) => {
-            return Err(ApiError::AuthenticationFailed(Some(
-                "Invalid refresh token".into(),
-            )));
+            return dispatch_refresh_grace(
+                &state,
+                &refresh_token,
+                &refresh_jti,
+                state.repos.session.lookup_refresh_grace(&refresh_jti).await,
+            )
+            .await
+            .unwrap_or_else(|| {
+                Err(ApiError::AuthenticationFailed(Some(
+                    "Invalid refresh token".into(),
+                )))
+            });
         }
         Err(e) => {
             error!("Database error fetching session: {:?}", e);
@@ -628,6 +585,7 @@ pub async fn refresh_session(
         }
     };
     let refresh_data = tranquil_db_traits::SessionRefreshData {
+        did: session_row.did.clone(),
         old_refresh_jti: refresh_jti.clone(),
         session_id: session_row.id,
         new_access_jti: new_access_meta.jti.clone(),
@@ -668,6 +626,102 @@ pub async fn refresh_session(
         }
     };
     build_refresh_session_output(&state, session_row.did, access_jwt, refresh_jwt).await
+}
+
+async fn dispatch_refresh_grace(
+    state: &AppState,
+    refresh_token: &str,
+    presented_jti: &str,
+    lookup: Result<tranquil_db_traits::RefreshGraceLookup, tranquil_db_traits::DbError>,
+) -> Option<Result<Json<RefreshSessionOutput>, ApiError>> {
+    match lookup {
+        Ok(tranquil_db_traits::RefreshGraceLookup::NotUsed) => None,
+        Ok(tranquil_db_traits::RefreshGraceLookup::Replay(replay)) => {
+            Some(serve_refresh_grace_replay(state, refresh_token, presented_jti, replay).await)
+        }
+        Ok(tranquil_db_traits::RefreshGraceLookup::Compromised {
+            did,
+            session_id,
+            key_bytes,
+            encryption_version,
+        }) => Some(Err(revoke_compromised_session(
+            state,
+            refresh_token,
+            presented_jti,
+            did,
+            session_id,
+            key_bytes,
+            encryption_version,
+        )
+        .await)),
+        Err(e) => {
+            error!("Database error checking refresh token grace: {:?}", e);
+            Some(Err(ApiError::InternalError(None)))
+        }
+    }
+}
+
+async fn serve_refresh_grace_replay(
+    state: &AppState,
+    refresh_token: &str,
+    presented_jti: &str,
+    replay: tranquil_db_traits::RefreshGraceReplay,
+) -> Result<Json<RefreshSessionOutput>, ApiError> {
+    let key =
+        match tranquil_pds::config::decrypt_key(&replay.key_bytes, Some(replay.encryption_version))
+        {
+            Ok(k) => k,
+            Err(e) => {
+                error!("Failed to decrypt user key for grace replay: {:?}", e);
+                return Err(ApiError::InternalError(None));
+            }
+        };
+    if tranquil_pds::auth::verify_refresh_token(refresh_token, &key).is_err() {
+        return Err(ApiError::AuthenticationFailed(Some(
+            "Invalid refresh token".into(),
+        )));
+    }
+    info!("Refresh token reuse within grace window for jti: {presented_jti}; replaying tokens");
+    let (access_jwt, refresh_jwt) = remint_grace_tokens(&replay, &key)?;
+    build_refresh_session_output(state, replay.did, access_jwt, refresh_jwt).await
+}
+
+async fn revoke_compromised_session(
+    state: &AppState,
+    refresh_token: &str,
+    presented_jti: &str,
+    did: Did,
+    session_id: SessionId,
+    key_bytes: Vec<u8>,
+    encryption_version: i32,
+) -> ApiError {
+    let key = match tranquil_pds::config::decrypt_key(&key_bytes, Some(encryption_version)) {
+        Ok(k) => k,
+        Err(e) => {
+            error!("Failed to decrypt user key for grace check: {:?}", e);
+            return ApiError::InternalError(None);
+        }
+    };
+    if tranquil_pds::auth::verify_refresh_token(refresh_token, &key).is_err() {
+        return ApiError::AuthenticationFailed(Some("Invalid refresh token".into()));
+    }
+    warn!("Refresh token reuse outside grace window for jti: {presented_jti}; revoking session");
+    if let Err(e) = state
+        .repos
+        .session
+        .delete_session_by_id(session_id, &did)
+        .await
+    {
+        error!(
+            "Failed to revoke session {} for refresh token reuse: {:?}",
+            session_id.as_i32(),
+            e
+        );
+        return ApiError::InternalError(None);
+    }
+    ApiError::AuthenticationFailed(Some(
+        "Refresh token has been revoked due to suspected compromise".into(),
+    ))
 }
 
 /// Re-mint the access/refresh JWTs for a grace-window replay from the session's
@@ -1112,7 +1166,7 @@ pub async fn revoke_session(
         state
             .repos
             .session
-            .delete_session_by_id(session_id)
+            .delete_session_by_id(session_id, &auth.did)
             .await
             .log_db_err("deleting session")?;
         let cache_key = tranquil_pds::cache_keys::session_key(&auth.did, &access_jti);

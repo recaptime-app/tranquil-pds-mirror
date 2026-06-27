@@ -488,12 +488,7 @@ fn migrate_delegation_preset_scopes(metastore: &tranquil_store::metastore::Metas
         "repo:*?action=create repo:*?action=update repo:*?action=delete blob:*/*";
 
     let infra = metastore.infra_ops();
-    if infra
-        .get_server_config(MARKER_KEY)
-        .ok()
-        .flatten()
-        .is_some()
-    {
+    if infra.get_server_config(MARKER_KEY).ok().flatten().is_some() {
         return;
     }
 
@@ -505,16 +500,21 @@ fn migrate_delegation_preset_scopes(metastore: &tranquil_store::metastore::Metas
             return;
         }
     };
-    let editors =
-        match ops.remap_grant_scopes(LEGACY_EDITOR_SCOPES, crate::delegation::EDITOR_FULL_SCOPES) {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::error!(error = ?e, "delegation editor-scope migration failed, will retry on next start");
-                return;
-            }
-        };
+    let editors = match ops
+        .remap_grant_scopes(LEGACY_EDITOR_SCOPES, crate::delegation::EDITOR_FULL_SCOPES)
+    {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!(error = ?e, "delegation editor-scope migration failed, will retry on next start");
+            return;
+        }
+    };
     if owners + editors > 0 {
-        tracing::info!(owners, editors, "upgraded legacy delegation grants to preset scopes");
+        tracing::info!(
+            owners,
+            editors,
+            "upgraded legacy delegation grants to preset scopes"
+        );
     }
 
     if let Err(e) = infra.upsert_server_config(MARKER_KEY, "done") {
