@@ -1,4 +1,5 @@
 use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -221,8 +222,10 @@ async fn fetch_lexicon_via_atproto(nsid: &str) -> Result<LexiconDoc, ScopeExpans
 }
 
 async fn resolve_lexicon_did_authority(authority: &str) -> Result<String, ScopeExpansionError> {
-    let resolver = TokioAsyncResolver::tokio_from_system_conf()
-        .map_err(|e| ScopeExpansionError::DnsResolution(e.to_string()))?;
+    let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap_or_else(|e| {
+        tracing::warn!("falling back to default DNS resolvers: {}", e);
+        TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())
+    });
 
     let dns_name = format!("_lexicon.{}", authority);
     debug!(dns_name = %dns_name, "Looking up DNS TXT record");

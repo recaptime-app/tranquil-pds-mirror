@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use lettre::message::Mailbox;
 use lettre::transport::smtp::AsyncSmtpTransport;
 use lettre::transport::smtp::PoolConfig;
@@ -128,9 +129,10 @@ fn build_smarthost(
 
 fn build_direct_mx(cfg: &tranquil_config::TranquilConfig) -> Result<SendMode, SendError> {
     let helo = resolve_helo(cfg)?;
-    let resolver = TokioAsyncResolver::tokio_from_system_conf()
-        .map(Arc::new)
-        .map_err(|e| config_invalid("system DNS configuration", e))?;
+    let resolver = Arc::new(TokioAsyncResolver::tokio_from_system_conf().unwrap_or_else(|e| {
+        tracing::warn!("falling back to default DNS resolvers: {}", e);
+        TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())
+    }));
     let max_concurrent = cfg.email.direct_mx.max_concurrent_sends.max(1);
     Ok(SendMode::DirectMx {
         resolver,

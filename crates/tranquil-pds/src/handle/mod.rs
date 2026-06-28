@@ -19,7 +19,10 @@ pub enum HandleResolutionError {
 }
 
 pub async fn resolve_handle_dns(handle: &str) -> Result<String, HandleResolutionError> {
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+    let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap_or_else(|e| {
+        tracing::warn!("falling back to default DNS resolvers: {}", e);
+        TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())
+    });
     let query_name = format!("_atproto.{}", handle);
     let txt_lookup = resolver
         .txt_lookup(&query_name)

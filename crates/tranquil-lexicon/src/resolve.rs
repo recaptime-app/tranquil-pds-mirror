@@ -85,7 +85,10 @@ pub fn nsid_to_authority(nsid: &str) -> Result<String, ResolveError> {
 }
 
 pub async fn resolve_did_from_dns(authority: &str) -> Result<String, ResolveError> {
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+    let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap_or_else(|e| {
+        tracing::warn!("falling back to default DNS resolvers: {}", e);
+        TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())
+    });
 
     let extract_did = |lookup: hickory_resolver::lookup::TxtLookup| -> Option<String> {
         lookup
